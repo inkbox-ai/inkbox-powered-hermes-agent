@@ -722,6 +722,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.INKBOX:
+            result = await _send_inkbox(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
@@ -1670,6 +1672,21 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
         )
     except Exception as e:
         return _error(f"Weixin send failed: {e}")
+
+
+async def _send_inkbox(extra, chat_id, message):
+    """Send via Inkbox (email/SMS) using the SDK directly — no aiohttp server."""
+    try:
+        from gateway.platforms.inkbox import check_inkbox_requirements, send_inkbox_direct
+        if not check_inkbox_requirements():
+            return {"error": "Inkbox requirements not met. Run: pip install inkbox aiohttp."}
+    except ImportError:
+        return {"error": "Inkbox adapter not available."}
+
+    try:
+        return await send_inkbox_direct(extra=extra or {}, chat_id=chat_id, message=message)
+    except Exception as e:
+        return _error(f"Inkbox send failed: {e}")
 
 
 async def _send_bluebubbles(extra, chat_id, message):

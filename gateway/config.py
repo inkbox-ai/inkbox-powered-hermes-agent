@@ -109,6 +109,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    INKBOX = "inkbox"
     @classmethod
     def _missing_(cls, value):
         """Accept unknown platform names only for known plugin adapters.
@@ -417,6 +418,10 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
     Platform.DINGTALK: lambda cfg: bool(
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
+    ),
+    Platform.INKBOX: lambda cfg: bool(
+        (cfg.extra.get("api_key") or os.getenv("INKBOX_API_KEY"))
+        and (cfg.extra.get("identity") or os.getenv("INKBOX_IDENTITY"))
     ),
 }
 
@@ -1642,6 +1647,34 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in {"true", "1", "yes"},
         })
+    # Inkbox (email + SMS + voice via inkbox.ai)
+    inkbox_api_key = os.getenv("INKBOX_API_KEY")
+    inkbox_identity = os.getenv("INKBOX_IDENTITY")
+    if inkbox_api_key and inkbox_identity:
+        if Platform.INKBOX not in config.platforms:
+            config.platforms[Platform.INKBOX] = PlatformConfig()
+        config.platforms[Platform.INKBOX].enabled = True
+        config.platforms[Platform.INKBOX].api_key = inkbox_api_key
+        config.platforms[Platform.INKBOX].extra.update({
+            "api_key": inkbox_api_key,
+            "identity": inkbox_identity,
+            "signing_key": os.getenv("INKBOX_SIGNING_KEY", ""),
+            "base_url": os.getenv("INKBOX_BASE_URL", "https://inkbox.ai"),
+            "host": os.getenv("INKBOX_HOST", "0.0.0.0"),
+            "port": int(os.getenv("INKBOX_LISTEN_PORT", "8765")),
+            "public_url": os.getenv("INKBOX_PUBLIC_URL", ""),
+            "ngrok_authtoken": os.getenv("NGROK_AUTHTOKEN", ""),
+            "require_signature": os.getenv("INKBOX_REQUIRE_SIGNATURE", "true").lower()
+                not in ("false", "0", "no"),
+        })
+    inkbox_home = os.getenv("INKBOX_HOME_CHANNEL")
+    if inkbox_home and Platform.INKBOX in config.platforms:
+        config.platforms[Platform.INKBOX].home_channel = HomeChannel(
+            platform=Platform.INKBOX,
+            chat_id=inkbox_home,
+            name=os.getenv("INKBOX_HOME_CHANNEL_NAME", "Home"),
+        )
+
     bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
     if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
         config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(

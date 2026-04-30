@@ -3293,6 +3293,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
+            "INKBOX_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -3308,6 +3309,7 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
+            "INKBOX_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -5314,6 +5316,16 @@ class GatewayRunner:
                 return None
             return QQAdapter(config)
 
+        elif platform == Platform.INKBOX:
+            from gateway.platforms.inkbox import InkboxAdapter, check_inkbox_requirements
+            if not check_inkbox_requirements():
+                logger.warning(
+                    "Inkbox: `inkbox` SDK or aiohttp not installed. "
+                    "Run: pip install inkbox aiohttp",
+                )
+                return None
+            return InkboxAdapter(config)
+
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
             if not WEBSOCKETS_AVAILABLE:
@@ -5363,6 +5375,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.INKBOX: "INKBOX_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -5389,6 +5402,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.INKBOX: "INKBOX_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -5574,6 +5588,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.INKBOX:   "INKBOX_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (
@@ -12215,7 +12230,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.INKBOX, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:

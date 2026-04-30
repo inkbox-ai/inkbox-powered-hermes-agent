@@ -494,6 +494,16 @@ PLATFORM_HINTS = {
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
     ),
+    "inkbox": (
+        "You are reaching the user through Inkbox — a unified email + SMS + voice "
+        "channel routed to a single contact. Each session represents one human "
+        "contact; messages may arrive as email, SMS, or live voice transcripts. "
+        "Pick the response register based on chat_topic: voice_call → spoken "
+        "phrasing, short sentences, no markdown, no code blocks (Inkbox-managed "
+        "TTS will read your reply aloud); SMS → plain text under 1600 chars, no "
+        "markdown; email → clear prose, optional structure but plain-text only. "
+        "Don't include greetings or sign-offs unless contextually appropriate."
+    ),
     "mattermost": (
         "You are in a Mattermost workspace communicating with your user. "
         "Mattermost renders standard Markdown — headings, bold, italic, code "
