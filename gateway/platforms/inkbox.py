@@ -176,6 +176,11 @@ class InkboxAdapter(BasePlatformAdapter):
         self._contact_cache: Dict[Tuple[str, str], Tuple[Optional[str], Optional[str], float]] = {}
         # Webhook dedup by ``X-Inkbox-Request-Id`` (Inkbox retries on timeout).
         self._seen_request_ids: Dict[str, float] = {}
+        # chat_id → metadata of the most-recent inbound email for that chat.
+        # Used by send()'s email branch to populate Re: <subject> and the
+        # In-Reply-To header so replies thread into the original conversation
+        # in the recipient's mail client.
+        self._last_inbound_email: Dict[str, Dict[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -498,14 +503,39 @@ class InkboxAdapter(BasePlatformAdapter):
                     success=False,
                     error=f"No email address on contact {chat_id}",
                 )
-            subject = meta.get("subject") or "(no subject)"
+
+            # Threading: prefer the inbound RFC 5322 Message-ID we stashed in
+            # _on_mail_received, fall back to whatever the gateway passed in
+            # as ``reply_to``.  Subject defaults to ``Re: <inbound subject>``
+            # when replying to a known thread, ``(no subject)`` when sending
+            # cold.  Mail clients use both signals (header + subject) to group
+            # the message into the original conversation.
+            stash = self._last_inbound_email.get(str(chat_id), {})
+            in_reply_to = (
+                meta.get("in_reply_to_message_id")
+                or reply_to
+                or stash.get("rfc_message_id")
+                or None
+            )
+            inbound_subject = stash.get("subject", "")
+            if meta.get("subject"):
+                subject = str(meta["subject"])
+            elif inbound_subject:
+                # Don't double-prefix if the agent's reply target already had Re:.
+                if inbound_subject.lower().startswith("re:"):
+                    subject = inbound_subject
+                else:
+                    subject = f"Re: {inbound_subject}"
+            else:
+                subject = "(no subject)"
+
             try:
                 msg = await asyncio.to_thread(
                     identity.send_email,
                     to=[to_addr],
                     subject=subject,
                     body_text=content,
-                    in_reply_to_message_id=reply_to,
+                    in_reply_to_message_id=in_reply_to or None,
                 )
                 return SendResult(success=True, message_id=str(getattr(msg, "id", "")))
             except Exception as exc:
@@ -625,6 +655,18 @@ class InkboxAdapter(BasePlatformAdapter):
         )
         chat_id = contact_id or from_address
         thread_id = message.get("thread_id")
+        rfc_message_id = message.get("message_id")  # RFC 5322 Message-ID for threading
+        subject = message.get("subject") or ""
+
+        # Stash the subject + RFC 5322 Message-ID so send() can populate
+        # Re: <subject> and the In-Reply-To header on replies.  Keyed by
+        # chat_id so unsolicited cron sends to the same chat fall back to
+        # the most-recent inbound for threading context.
+        self._last_inbound_email[str(chat_id)] = {
+            "subject": subject,
+            "rfc_message_id": rfc_message_id or "",
+            "from_address": from_address,
+        }
 
         source = self.build_source(
             chat_id=str(chat_id),
@@ -633,16 +675,20 @@ class InkboxAdapter(BasePlatformAdapter):
             user_id=str(chat_id),
             user_name=contact_name or from_address,
             thread_id=f"email:{thread_id}" if thread_id else None,
-            chat_topic=message.get("subject") or None,
-            message_id=message.get("id"),
+            chat_topic=subject or None,
+            # MessageEvent.message_id is what the gateway passes back as
+            # ``reply_to`` on send().  Use the RFC 5322 Message-ID (not the
+            # Inkbox UUID) so SDK send_email(in_reply_to_message_id=...)
+            # actually threads the reply.
+            message_id=rfc_message_id or message.get("id"),
         )
-        body_text = message.get("snippet") or message.get("subject") or ""
+        body_text = message.get("snippet") or subject or ""
         event = MessageEvent(
             text=body_text,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=envelope,
-            message_id=str(message.get("id") or ""),
+            message_id=rfc_message_id or str(message.get("id") or ""),
         )
         await self._enqueue(event)
         return web.Response(status=200, text="ok")
