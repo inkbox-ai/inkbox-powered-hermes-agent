@@ -107,6 +107,28 @@ CONTACT_CACHE_TTL_SECONDS = 300
 WEBHOOK_DEDUP_TTL_SECONDS = 300
 SMS_MAX_LENGTH = 1600  # Inkbox SMS hard cap
 
+# Hermes emits a few classes of admin/system notice via adapter.send() —
+# session-reset banners ("◐ ..."), runtime info blocks ("◆ Model: ..."),
+# the home-channel prompt ("📬 No home channel..."), update/restart notes
+# ("🔄 ..."), check/x-mark status pings ("✓ ..." / "✗ ..."), and the
+# warning prefix ("⚠️ ...").  These are CLI/terminal-style chatter that
+# leaks into the user's actual mailbox or SMS thread on Inkbox.  Drop
+# them at adapter.send() so they never get delivered as real messages.
+_ADMIN_NOTICE_PREFIXES: Tuple[str, ...] = (
+    "◐", "◆", "📬", "🔄", "✓", "✗", "⚠️", "⚠",
+)
+
+
+def _is_hermes_admin_notice(content: str) -> bool:
+    """True when *content* is a Hermes-internal status/admin chatter line.
+
+    Triggered when the message starts with one of the well-known glyphs
+    Hermes uses to flag system messages in the CLI/TUI.  These have no
+    business landing in a real human's email inbox or SMS thread.
+    """
+    head = (content or "").lstrip().lstrip("﻿")
+    return head.startswith(_ADMIN_NOTICE_PREFIXES)
+
 
 def check_inkbox_requirements() -> bool:
     """Return True iff the Python ``inkbox`` SDK and aiohttp are importable.
@@ -429,7 +451,19 @@ class InkboxAdapter(BasePlatformAdapter):
         contacts that have an email on file), ``sms``, or ``voice``. For
         voice mode the message is pushed onto the contact's active call
         WebSocket — the caller hears it through Inkbox-managed TTS.
+
+        Hermes admin / status banners (session-reset notices, runtime info,
+        home-channel prompt, update notifications) are silently dropped —
+        these are CLI chatter that never belongs in a real user's email or
+        SMS thread.  See ``_is_hermes_admin_notice`` for the prefix list.
         """
+        if _is_hermes_admin_notice(content):
+            logger.debug(
+                "[Inkbox] Suppressed admin notice for chat %s: %s…",
+                chat_id, (content or "")[:60].replace("\n", " "),
+            )
+            return SendResult(success=True, message_id="suppressed-admin-notice")
+
         meta = metadata or {}
         mode = (meta.get("mode") or "").lower().strip()
 
