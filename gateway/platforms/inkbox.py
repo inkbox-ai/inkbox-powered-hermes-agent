@@ -898,7 +898,11 @@ class InkboxAdapter(BasePlatformAdapter):
                 ctx = {}
             call_id = call_id or str(ctx.get("call_id") or ctx.get("id") or "")
             remote = (ctx.get("remote_phone_number") or "").strip()
-            direction = (ctx.get("direction") or "").strip().lower()
+            # NOTE: ``ctx`` may carry a ``direction`` field but it's reported
+            # from Inkbox-server perspective (always "inbound to them"), so
+            # we cannot trust it here.  The SDK call record is the only
+            # authoritative source — fetched below.
+            direction = ""
 
             # Always round-trip through the SDK to learn ``direction`` (and
             # backfill ``remote_phone_number`` if the header didn't carry it).
@@ -918,14 +922,17 @@ class InkboxAdapter(BasePlatformAdapter):
                         call = await asyncio.to_thread(
                             self._inkbox._calls.get, pn_id, call_id,
                         )
+                        direction = (getattr(call, "direction", "") or "").strip().lower()
                         if not remote:
                             remote = (getattr(call, "remote_phone_number", "") or "").strip()
-                        if not direction:
-                            direction = (getattr(call, "direction", "") or "").strip().lower()
                 except Exception as exc:
                     logger.warning(
                         "[Inkbox] Call lookup failed for call_id=%s: %s", call_id, exc,
                     )
+
+            # Header value is only a fallback if the SDK round-trip failed.
+            if not direction:
+                direction = (ctx.get("direction") or "").strip().lower()
 
             contact = (
                 await self._resolve_contact_full(kind="phone", value=remote)
