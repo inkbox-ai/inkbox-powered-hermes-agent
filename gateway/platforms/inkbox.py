@@ -33,7 +33,10 @@ Hermes session spans email + SMS + voice for the same remote party::
 
     inbound mail   → chat_id=contact_id, thread_id=f"email:{tid}"
     inbound SMS    → chat_id=contact_id, thread_id=None
-    live call turn → chat_id=contact_id, thread_id=f"call:{call_id}"
+    inbound call   → chat_id=contact_id, thread_id=f"call:{call_id}"
+    outbound call  → chat_id=contact_id, thread_id=None  (joins the
+                     contact's main session so the agent inherits the
+                     conversation that decided to place the call)
 
 When ``inkbox.contacts.lookup()`` returns 0 or >1 contacts the adapter
 falls back to the raw email address / phone number as ``chat_id``, so
@@ -895,9 +898,14 @@ class InkboxAdapter(BasePlatformAdapter):
                 ctx = {}
             call_id = call_id or str(ctx.get("call_id") or ctx.get("id") or "")
             remote = (ctx.get("remote_phone_number") or "").strip()
+            direction = (ctx.get("direction") or "").strip().lower()
 
-            # SDK fallback when the header didn't carry the remote number.
-            if not remote and call_id and self._inkbox is not None:
+            # Always round-trip through the SDK to learn ``direction`` (and
+            # backfill ``remote_phone_number`` if the header didn't carry it).
+            # Direction drives session keying below — outbound calls join the
+            # contact's main session for context continuity, inbound calls
+            # stay isolated under their own thread.
+            if call_id and self._inkbox is not None:
                 try:
                     identity = await asyncio.to_thread(
                         self._inkbox.get_identity, self._identity_handle,
@@ -910,7 +918,10 @@ class InkboxAdapter(BasePlatformAdapter):
                         call = await asyncio.to_thread(
                             self._inkbox._calls.get, pn_id, call_id,
                         )
-                        remote = (getattr(call, "remote_phone_number", "") or "").strip()
+                        if not remote:
+                            remote = (getattr(call, "remote_phone_number", "") or "").strip()
+                        if not direction:
+                            direction = (getattr(call, "direction", "") or "").strip().lower()
                 except Exception as exc:
                     logger.warning(
                         "[Inkbox] Call lookup failed for call_id=%s: %s", call_id, exc,
@@ -928,10 +939,24 @@ class InkboxAdapter(BasePlatformAdapter):
                 ),
                 "contact": contact,
                 "remote_phone_number": remote,
+                "direction": direction or "inbound",
             }
 
         contact_id = meta.get("contact_id") or call_id or "unknown"
         contact_name = meta.get("contact_name") or contact_id
+        direction = (meta.get("direction") or "inbound").strip().lower()
+
+        # Direction-aware session keying:
+        #   - Outbound calls (the agent placed them) collapse into the
+        #     contact's main session — same session SMS/email use — so the
+        #     agent inherits the conversation that decided to call.  This
+        #     is what lets it answer "why are you calling me?" without any
+        #     external context-token plumbing.
+        #   - Inbound calls (someone dialled us) stay isolated under their
+        #     own ``call:<call_id>`` thread so the caller's fresh intent
+        #     isn't drowned in old SMS/email history.
+        call_thread_id = None if direction == "outbound" else f"call:{call_id}"
+
         # Bind this WS as the active sink for the contact, and tag the
         # contact's most-recent inbound modality as ``voice`` so the gateway's
         # outbound ``send()`` path routes the agent's reply onto this WS
@@ -967,8 +992,10 @@ class InkboxAdapter(BasePlatformAdapter):
                 )
 
         logger.info(
-            "[Inkbox] Call WS open: call_id=%s contact_id=%s remote=%s context=%s",
+            "[Inkbox] Call WS open: call_id=%s contact_id=%s remote=%s "
+            "direction=%s thread=%s context=%s",
             call_id, contact_id, meta.get("remote_phone_number"),
+            direction, call_thread_id,
             (call_context.get("reason") or "")[:80] if call_context else "(none)",
         )
 
@@ -1029,7 +1056,7 @@ class InkboxAdapter(BasePlatformAdapter):
                         chat_type="dm",
                         user_id=str(contact_id),
                         user_name=contact_name,
-                        thread_id=f"call:{call_id}",
+                        thread_id=call_thread_id,
                         chat_topic="voice_call",
                         message_id=payload.get("turn_id"),
                     )
