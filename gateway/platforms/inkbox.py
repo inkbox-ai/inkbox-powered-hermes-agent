@@ -1018,12 +1018,13 @@ class InkboxAdapter(BasePlatformAdapter):
 
         greeting_sent = False
 
-        async def _send_greeting() -> None:
-            """Speak an opening line so the caller hears something immediately.
+        async def _send_static_greeting() -> None:
+            """Static opener for INBOUND calls — caller is unknown intent.
 
-            Sent direct from the adapter without going through the agent — the
-            agent's first turn will be the caller's first transcript.  Mirrors
-            what the legacy phone-bridge did so call setup latency stays low.
+            Sent direct from the adapter without going through the agent so
+            the caller hears something within ~1s of pickup.  Inbound calls
+            don't have prior context worth opening on, so a generic greeting
+            is fine.
             """
             contact = meta.get("contact") or {}
             first_name = ""
@@ -1034,9 +1035,61 @@ class InkboxAdapter(BasePlatformAdapter):
             try:
                 await _send_text_delta(text, turn_id="greeting")
                 await _send_text_done(turn_id="greeting")
-                logger.info("[Inkbox] Sent greeting to call_id=%s", call_id)
+                logger.info("[Inkbox] Sent static greeting to call_id=%s", call_id)
             except Exception as exc:
                 logger.warning("[Inkbox] Failed to send greeting: %s", exc)
+
+        async def _trigger_outbound_opening() -> None:
+            """Opener for OUTBOUND calls — let the agent speak first.
+
+            We placed this call.  The session this call lands on is the same
+            one that decided to call (SMS thread / email thread for the
+            contact), so the agent already has full context for *why* it's
+            calling.  Enqueue a synthetic event that asks the agent to greet
+            with that context in mind — its reply rides the call WS as the
+            first audio the callee hears.
+
+            Trade-off: a 1-2s pause at pickup while the agent generates the
+            opener.  Worth it: the caller gets "Hey Dima, calling about the
+            cats thing as you asked" instead of a generic "How can I help?"
+            from a system that just dialed them.
+            """
+            contact_block = self._contact_marker(meta.get("contact"))
+            tagged = (
+                f"[inkbox:voice_call call_id={call_id} | {contact_block}]\n"
+                "[outbound_call_connected] You just placed this call. The "
+                "callee picked up. Greet them by name and open with the "
+                "reason for the call, drawing from the conversation that "
+                "decided to place it (above in this thread). Keep it to one "
+                "short sentence; the rest of the conversation will follow."
+            )
+            source = self.build_source(
+                chat_id=str(contact_id),
+                chat_name=contact_name,
+                chat_type="dm",
+                user_id=str(contact_id),
+                user_name=contact_name,
+                thread_id=call_thread_id,
+                chat_topic="voice_call",
+                message_id=f"call:{call_id}:opening",
+            )
+            event = MessageEvent(
+                text=tagged,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message={"synthetic": "outbound_call_opening"},
+                message_id=f"call:{call_id}:opening",
+                auto_skill="inkbox-python",
+            )
+            try:
+                await self._enqueue(event)
+                logger.info(
+                    "[Inkbox] Triggered outbound opener for call_id=%s", call_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Inkbox] Failed to enqueue outbound opener: %s", exc,
+                )
 
         first_transcript_seen = False
 
@@ -1051,7 +1104,10 @@ class InkboxAdapter(BasePlatformAdapter):
                 ev = payload.get("event")
                 if ev == "start" and not greeting_sent:
                     greeting_sent = True
-                    asyncio.create_task(_send_greeting())
+                    if direction == "outbound":
+                        asyncio.create_task(_trigger_outbound_opening())
+                    else:
+                        asyncio.create_task(_send_static_greeting())
                     continue
                 if ev == "transcript" and payload.get("is_final"):
                     text = (payload.get("text") or "").strip()
