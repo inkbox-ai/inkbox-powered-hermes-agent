@@ -15,6 +15,12 @@ on:
   workflow_dispatch:
 
 permissions:
+  # GITHUB_TOKEN is constrained by org policy and can't be elevated to
+  # pull-requests: write — instead we mint an installation token from
+  # the On-call Hermes Agent GitHub App (see "Mint App token" step).
+  # The block stays here so any future maintainer sees what the workflow
+  # actually needs, and so the workflow degrades gracefully if the App
+  # secrets get yanked.
   contents: write
   pull-requests: write
 
@@ -30,13 +36,22 @@ jobs:
       TARGET_BRANCH: inkbox
       SYNC_BRANCH: sync/upstream-main
     steps:
+      - name: Mint App token
+        id: app_token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3  # v3.1.1
+        with:
+          app-id: ${{ secrets.HERMES_APP_ID }}
+          private-key: ${{ secrets.HERMES_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           # Start on inkbox; we'll switch branches as needed.
           ref: ${{ env.TARGET_BRANCH }}
           # Full history so merges have a valid base.
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # App-minted token; configures git's HTTP credentials for the
+          # subsequent push steps too.
+          token: ${{ steps.app_token.outputs.token }}
 
       - name: Configure git identity
         run: |
@@ -125,7 +140,7 @@ jobs:
       - name: Phase 2 — open or update sync PR
         if: steps.check.outputs.in_sync == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
           CONFLICTS: ${{ steps.merge.outputs.conflicts }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
           NEW_COMMITS: ${{ steps.check.outputs.new_commits }}
