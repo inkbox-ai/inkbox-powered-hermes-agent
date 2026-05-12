@@ -1658,14 +1658,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.INKBOX].extra.update({
             "api_key": inkbox_api_key,
             "identity": inkbox_identity,
-            "signing_key": os.getenv("INKBOX_SIGNING_KEY", ""),
             "base_url": os.getenv("INKBOX_BASE_URL", "https://inkbox.ai"),
             "host": os.getenv("INKBOX_HOST", "0.0.0.0"),
             "port": int(os.getenv("INKBOX_LISTEN_PORT", "8765")),
             "public_url": os.getenv("INKBOX_PUBLIC_URL", ""),
             "tunnel_name": os.getenv("INKBOX_TUNNEL_NAME", ""),
-            "require_signature": os.getenv("INKBOX_REQUIRE_SIGNATURE", "true").lower()
-                not in ("false", "0", "no"),
         })
     inkbox_home = os.getenv("INKBOX_HOME_CHANNEL")
     if inkbox_home and Platform.INKBOX in config.platforms:

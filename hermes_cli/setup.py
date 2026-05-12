@@ -1879,9 +1879,6 @@ def _setup_inkbox():
 
     On a brand-new identity we collect the handle, mailbox local part, and an
     optional phone (provisioned as a *local* number so SMS is supported).
-
-    Webhook signing-key collection is intentionally omitted; the wizard sets
-    INKBOX_REQUIRE_SIGNATURE=false so the runtime accepts unsigned webhooks.
     """
     from inkbox import Inkbox
     from inkbox.exceptions import InkboxAPIError
@@ -1936,10 +1933,8 @@ def _setup_inkbox():
         if identity is None:
             return
 
-    # ── Persist and disable signature requirement (wizard skips signing setup) ──
     save_env_value("INKBOX_API_KEY", api_key)
     save_env_value("INKBOX_IDENTITY", identity.agent_handle)
-    save_env_value("INKBOX_REQUIRE_SIGNATURE", "false")
 
     # ── Invalidate the stale identity-state file so prompt_builder + skill
     # helpers don't read a previous identity's data. The gateway adapter is
@@ -2526,7 +2521,6 @@ def _inkbox_print_agent_summary(identity):
 
     print()
     print_info("  Wrote INKBOX_API_KEY, INKBOX_IDENTITY to .env.")
-    print_info("  Webhook signature verification disabled (INKBOX_REQUIRE_SIGNATURE=false).")
     print_info("  Start the gateway with:  hermes gateway start")
 
     # SMS opt-in: text START from any phone you want to message this agent

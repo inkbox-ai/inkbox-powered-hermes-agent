@@ -82,12 +82,11 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 try:
-    from inkbox import Inkbox, verify_webhook
+    from inkbox import Inkbox
 
     INKBOX_AVAILABLE = True
 except ImportError:
     Inkbox = None  # type: ignore[assignment]
-    verify_webhook = None  # type: ignore[assignment]
     INKBOX_AVAILABLE = False
 
 try:
@@ -253,9 +252,6 @@ class InkboxAdapter(BasePlatformAdapter):
         self._api_key = (
             extra.get("api_key") or os.getenv("INKBOX_API_KEY") or ""
         ).strip()
-        self._signing_key = (
-            extra.get("signing_key") or os.getenv("INKBOX_SIGNING_KEY") or ""
-        ).strip()
         self._identity_handle = (
             extra.get("identity") or os.getenv("INKBOX_IDENTITY") or ""
         ).strip()
@@ -274,10 +270,6 @@ class InkboxAdapter(BasePlatformAdapter):
         self._tunnel_name_override = (
             extra.get("tunnel_name") or os.getenv("INKBOX_TUNNEL_NAME") or ""
         ).strip().lower()
-        self._require_signature = str(
-            extra.get("require_signature")
-            or os.getenv("INKBOX_REQUIRE_SIGNATURE", "true")
-        ).lower() not in ("false", "0", "no")
 
         # Live state.
         self._inkbox: Optional[Any] = None
@@ -334,14 +326,6 @@ class InkboxAdapter(BasePlatformAdapter):
             return False
         if not self._identity_handle:
             logger.warning("[Inkbox] INKBOX_IDENTITY not set")
-            return False
-        if self._require_signature and not self._signing_key:
-            logger.warning(
-                "[Inkbox] INKBOX_SIGNING_KEY not set and "
-                "INKBOX_REQUIRE_SIGNATURE is enabled; refusing to start. "
-                "Generate a signing key in console.inkbox.ai or set "
-                "INKBOX_REQUIRE_SIGNATURE=false for local-only testing.",
-            )
             return False
 
         if not self._acquire_platform_lock(
@@ -914,14 +898,6 @@ class InkboxAdapter(BasePlatformAdapter):
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         body = await request.read()
-        if self._require_signature:
-            ok = verify_webhook(
-                payload=body,
-                headers=dict(request.headers),
-                secret=self._signing_key,
-            )
-            if not ok:
-                return web.Response(status=401, text="invalid signature")
 
         request_id = request.headers.get("X-Inkbox-Request-Id", "")
         if request_id and self._is_duplicate(request_id):

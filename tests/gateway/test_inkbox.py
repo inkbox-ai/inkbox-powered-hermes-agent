@@ -17,7 +17,7 @@ from gateway.config import Platform, PlatformConfig
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _patch_sdk(monkeypatch, *, lookup_result=None, verify_result=True):
+def _patch_sdk(monkeypatch, *, lookup_result=None):
     """Stub out the lazy ``inkbox`` SDK imports inside the adapter module.
 
     ``lookup_result`` is the list returned by ``client.contacts.lookup`` for
@@ -50,9 +50,6 @@ def _patch_sdk(monkeypatch, *, lookup_result=None, verify_result=True):
     InkboxClass.return_value.__exit__ = MagicMock(return_value=False)
 
     monkeypatch.setattr(inkbox_mod, "Inkbox", InkboxClass, raising=False)
-    monkeypatch.setattr(
-        inkbox_mod, "verify_webhook", lambda **kw: verify_result, raising=False,
-    )
     monkeypatch.setattr(inkbox_mod, "INKBOX_AVAILABLE", True, raising=False)
     return fake_client
 
@@ -67,7 +64,6 @@ def _make_adapter(monkeypatch, **extra):
         extra={
             "api_key": "ApiKey_test",
             "identity": "inkbox-on-call-agent",
-            "signing_key": "whsec_test",
             "base_url": "https://inkbox.ai",
             **extra,
         },
@@ -89,7 +85,6 @@ class TestInkboxConfigLoading:
     def test_apply_env_overrides_inkbox(self, monkeypatch):
         monkeypatch.setenv("INKBOX_API_KEY", "ApiKey_abc")
         monkeypatch.setenv("INKBOX_IDENTITY", "test-agent")
-        monkeypatch.setenv("INKBOX_SIGNING_KEY", "whsec_xyz")
         monkeypatch.setenv("INKBOX_LISTEN_PORT", "9999")
         from gateway.config import GatewayConfig, _apply_env_overrides
 
@@ -101,7 +96,6 @@ class TestInkboxConfigLoading:
         assert ic.enabled is True
         assert ic.extra["api_key"] == "ApiKey_abc"
         assert ic.extra["identity"] == "test-agent"
-        assert ic.extra["signing_key"] == "whsec_xyz"
         assert ic.extra["port"] == 9999
 
     def test_home_channel_set_from_env(self, monkeypatch):
@@ -152,18 +146,6 @@ class _FakeRequest:
 
 
 class TestWebhookRouting:
-    @pytest.mark.asyncio
-    async def test_signature_verification_failure_returns_401(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
-        # Force verify_webhook to reject.
-        import gateway.platforms.inkbox as inkbox_mod
-        monkeypatch.setattr(
-            inkbox_mod, "verify_webhook", lambda **kw: False, raising=False,
-        )
-        req = _FakeRequest(b"{}", headers={"X-Inkbox-Signature": "bad"})
-        resp = await adapter._handle_webhook(req)
-        assert resp.status == 401
-
     @pytest.mark.asyncio
     async def test_mail_webhook_routes_to_message_event(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
