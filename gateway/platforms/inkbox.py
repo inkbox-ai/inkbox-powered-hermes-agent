@@ -137,6 +137,11 @@ _ADMIN_NOTICE_PREFIXES: Tuple[str, ...] = (
     "🧠",  # thinking / reasoning
     "🛠",  # tool generic
     "🔧",  # tool generic alt
+    # Save/cache/persistence glyph — covers the background self-improvement
+    # review banner ("💾 Self-improvement review: User profile updated · …"),
+    # prompt-cache + cached-context status pings, trajectory-compressor
+    # "Metrics saved to …" notices, etc.
+    "💾",
 )
 
 # Substrings that mark CLI/TUI runtime chatter even when the leading glyph is
@@ -153,6 +158,9 @@ _ADMIN_NOTICE_SUBSTRINGS: Tuple[str, ...] = (
     "Still working",
     "min elapsed — iteration",
     "Cronjob Response:",
+    # Belt-and-suspenders: the self-improvement banner is sometimes
+    # forwarded with the leading glyph stripped upstream of us.
+    "Self-improvement review:",
 )
 
 
