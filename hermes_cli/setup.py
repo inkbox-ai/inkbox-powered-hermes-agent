@@ -1937,28 +1937,18 @@ def _setup_inkbox():
     save_env_value("INKBOX_IDENTITY", identity.agent_handle)
 
     # ── Access mode ──
-    # Inkbox messages arrive over real-world channels (email, SMS, voice),
-    # so the gateway's deny-all default trips the moment anyone outside an
-    # explicit allowlist contacts the agent. Mirror the other platforms'
-    # wizard prompts here so the user makes a conscious choice instead of
-    # surprise-discovering the pairing flow on the first inbound message.
+    # Inkbox already gates inbound at the platform level via contact rules
+    # (mailbox/phone contact rules + contact_access, configured server-side
+    # at console.inkbox.ai). The local Hermes allowlist + DM-pairing flow
+    # would be a second, redundant allowlist for the same decision — so we
+    # bypass it for Inkbox and let any sender Inkbox lets through reach
+    # the agent. Power users who want belt-and-suspenders can flip
+    # INKBOX_ALLOW_ALL_USERS back to "false" in ~/.hermes/.env.
+    save_env_value("INKBOX_ALLOW_ALL_USERS", "true")
     print()
-    print_info("The gateway DENIES all users by default for security.")
-    access_choices = [
-        "Enable open access (anyone with the email/phone can reach the agent)",
-        "Use DM pairing (unknown senders request access, you approve with 'hermes pairing approve')",
-        "Skip for now (set INKBOX_ALLOWED_USERS or INKBOX_ALLOW_ALL_USERS later)",
-    ]
-    access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, 1)
-    if access_idx == 0:
-        save_env_value("INKBOX_ALLOW_ALL_USERS", "true")
-        print_warning("  Open access enabled — anyone who knows your agent's email/phone can talk to it!")
-    elif access_idx == 1:
-        save_env_value("INKBOX_ALLOW_ALL_USERS", "false")
-        print_success("  DM pairing mode — unknown senders will get a code to request access.")
-        print_info("  Approve with: hermes pairing approve inkbox <code>")
-    else:
-        print_info("  Skipped — set INKBOX_ALLOWED_USERS or INKBOX_ALLOW_ALL_USERS in ~/.hermes/.env to enable inbound.")
+    print_info("Inkbox authorization lives server-side via contact rules:")
+    print_info("  https://console.inkbox.ai → Mailboxes / Phone Numbers → Contact Rules")
+    print_info("Anyone Inkbox lets through reaches the agent — no second allowlist to maintain.")
 
     # ── Invalidate the stale identity-state file so prompt_builder + skill
     # helpers don't read a previous identity's data. The gateway adapter is
