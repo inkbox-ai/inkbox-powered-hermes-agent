@@ -16,8 +16,8 @@ param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
     [string]$Branch = "inkbox",
-    [string]$HermesHome = "$env:LOCALAPPDATA\hermes-inkbox",
-    [string]$InstallDir = "$env:LOCALAPPDATA\hermes-inkbox\hermes-agent"
+    [string]$HermesHome = "$env:LOCALAPPDATA\hermes",
+    [string]$InstallDir = "$env:LOCALAPPDATA\hermes\hermes-agent"
 )
 
 $ErrorActionPreference = "Stop"
