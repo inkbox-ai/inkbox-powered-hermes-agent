@@ -10,7 +10,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
-A fork of [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent) wired up to [Inkbox](https://inkbox.ai). The agent runtime is the same — the difference is every install ships with a **real email address, real phone number, and tunnel runtime** out of the box. No SES / Twilio / SIP / hosted webhook server to wrangle.
+A fork of [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent) wired up to [Inkbox](https://inkbox.ai). The agent runtime is the same — the difference is every install ships with a **real email address, real phone number, and tunnel runtime** out of the box.
 
 ## Quick Install
 
@@ -20,7 +20,13 @@ curl -fsSL https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scrip
 
 One command. Installs deps, then walks you through Inkbox self-signup (no account prerequisite), provisions email + phone, and installs the gateway as a background service.
 
-**Windows (early beta):** use `irm https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.ps1 | iex` in PowerShell. WSL2 is the more battle-tested path.
+**Windows (early beta):**
+
+```powershell
+irm https://raw.githubusercontent.com/inkbox-ai/hermes-agent/inkbox/scripts/install.ps1 | iex
+```
+
+WSL2 is the more battle-tested path.
 
 By the end your agent has:
 
@@ -29,7 +35,7 @@ By the end your agent has:
 - A persistent identity + contact list that survives across sessions
 - A background service that auto-starts on boot, with HMAC-verified webhooks
 
-## What this fork adds vs upstream
+## What this fork adds
 
 | Capability | Upstream Hermes | This fork |
 | --- | --- | --- |
@@ -37,7 +43,7 @@ By the end your agent has:
 | Real email address (inbox + outbox) | bring your own SES / SendGrid | ✓ built-in |
 | Real phone number (SMS + voice) | bring your own Twilio / SIP | ✓ built-in |
 | Public webhook tunnel | host your own server | ✓ via Inkbox SDK |
-| Persistent contact graph | — | ✓ |
+| Persistent contact list | — | ✓ |
 | Account / API key prerequisite | n/a | none — self-signup inline |
 
 Specifically:
@@ -47,9 +53,12 @@ Specifically:
 - Tunnel runtime + gateway adapter built in — the agent receives webhooks without you hosting a server
 - Gateway service installer wires the runtime into systemd / launchd / Scheduled Task
 - HMAC signature verification on inbound webhooks + tunnel traffic
-- Daily auto-sync from upstream so the agent stays current
 
 If you want **just the Hermes runtime** and prefer to bring your own SMTP / Twilio / SIP plumbing, use upstream at [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent).
+
+## Synced daily with upstream
+
+We try to sync from [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) daily.
 
 ## Hermes itself
 
