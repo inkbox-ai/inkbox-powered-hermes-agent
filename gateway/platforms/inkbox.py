@@ -712,6 +712,20 @@ class InkboxAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id="suppressed-admin-notice")
 
+        # The [SILENT] marker is the cron scheduler's "I have nothing to
+        # say" sentinel and is also instructed to the agent in the
+        # post-call synthetic [call_ended] turn (see _handle_call_ws).
+        # If the agent emits it through any send() path — including a
+        # send_message tool call that picks email/SMS as the channel —
+        # drop the send entirely. A bare [SILENT] email is never a
+        # message a human wants to receive.
+        if (content or "").strip().upper() == "[SILENT]":
+            logger.info(
+                "[Inkbox] Suppressed [SILENT] sentinel for chat %s",
+                chat_id,
+            )
+            return SendResult(success=True, message_id="suppressed-silent-marker")
+
         meta = metadata or {}
         mode = (meta.get("mode") or "").lower().strip()
 
@@ -723,17 +737,20 @@ class InkboxAdapter(BasePlatformAdapter):
         # Drop when ALL of:
         #   - call WS just closed for this chat within VOICE_GRACE_SECONDS
         #   - no active call WS now (so we cannot ride the WS)
-        #   - gateway didn't pass an explicit ``mode``
         #   - no fresh non-voice inbound has arrived since the close (which
         #     would have repopulated ``_last_inbound_modality`` and made this
         #     a legitimate SMS/email reply, not stale voice content).
+        #
+        # Note: we intentionally suppress regardless of whether the caller
+        # passed an explicit ``mode``. An explicit ``mode='email'`` from a
+        # post-call send_message tool call is exactly the case that bit us
+        # (the agent's "reflect on the call" reply leaked out as an email).
         VOICE_GRACE_SECONDS = 60
         closed_at = self._voice_recently_closed.get(str(chat_id))
         if (
             closed_at is not None
             and (time.time() - closed_at) < VOICE_GRACE_SECONDS
             and chat_id not in self._active_call_ws
-            and not mode
             and not self._last_inbound_modality.get(str(chat_id))
         ):
             logger.info(
