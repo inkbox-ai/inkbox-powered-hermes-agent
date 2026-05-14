@@ -72,11 +72,11 @@ with Inkbox(api_key=os.environ["INKBOX_API_KEY"]) as ink:
 
 ```
 Inkbox (admin-only client)
-├── .create_identity(handle, *, display_name=, description=,
+├── .create_identity(agent_handle, *, display_name=, description=,
 │                    email_local_part=, sending_domain=,
 │                    tunnel=, phone_number=, vault_secret_ids=)
 │                              → AgentIdentity   (atomically creates mailbox + tunnel)
-├── .get_identity(handle)     → AgentIdentity
+├── .get_identity(agent_handle) → AgentIdentity
 ├── .list_identities()        → list[AgentIdentitySummary]
 ├── .mailboxes                → MailboxesResource   (list/get/update/search; no create/delete)
 ├── .phone_numbers            → PhoneNumbersResource
@@ -107,7 +107,7 @@ AgentIdentity (identity-scoped helper)
 
 ## Agent Signup
 
-Public, no API key required: `Inkbox.signup(human_email, note_to_human, agent_handle=None, email_local_part=None)` returns a freshly-provisioned email address, organization, and a one-time API key. The 6-digit verification code from the email goes through `Inkbox.verify_signup(api_key, code)`. Resend the email with `Inkbox.resend_signup_verification(api_key)`; check claim status + restrictions with `Inkbox.get_signup_status(api_key)`. Until verified, the agent is rate-limited and recipient-restricted — verification unlocks full sending capabilities.
+Public, no API key required: `Inkbox.signup(human_email, *, note_to_human, display_name=None, agent_handle=None, email_local_part=None)` returns a freshly-provisioned email address, organization, and a one-time API key. `note_to_human` is keyword-only. The 6-digit verification code from the email goes through `Inkbox.verify_signup(api_key, verification_code)` (positional). Resend the email with `Inkbox.resend_signup_verification(api_key)`; check claim status + restrictions with `Inkbox.get_signup_status(api_key)`. Until verified, the agent is rate-limited and recipient-restricted — verification unlocks full sending capabilities.
 
 ## Identities
 
@@ -168,7 +168,7 @@ sent = identity.send_email(
     body_html="<p>Hi there!</p>",   # HTML (optional)
     cc=["cc@example.com"],          # optional
     bcc=["bcc@example.com"],        # optional
-    in_reply_to_message_id=sent.id, # for threaded replies
+    in_reply_to_message_id=parent.message_id,  # RFC-5322 Message-ID (NOT parent.id, which is the row UUID)
     attachments=[{                  # optional
         "filename": "report.pdf",
         "content_type": "application/pdf",
@@ -346,9 +346,11 @@ identity.mark_text_read("text-uuid")
 result = identity.mark_text_conversation_read("+15167251294")
 print(result["updated_count"])
 
-# Admin-only: search, update, delete
+# Admin-only: full-text search across a number's texts
 results = inkbox.texts.search(phone.id, q="invoice", limit=20)
-inkbox.texts.update(phone.id, "text-uuid", status="deleted")
+
+# Mark read / unread via the admin resource (no status / delete fields).
+inkbox.texts.update(phone.id, "text-uuid", is_read=True)
 ```
 
 ## Vault
@@ -379,7 +381,7 @@ unlocked = inkbox.vault.unlock("my-Vault-key-01!", identity_id="agent-uuid")
 # All decrypted secrets from the unlock bundle
 for secret in unlocked.secrets:
     print(secret.name, secret.secret_type)
-    print(secret.payload)   # LoginPayload, APIKeyPayload, SSHKeyPayload, or OtherPayload
+    print(secret.payload)   # LoginPayload, APIKeyPayload, KeyPairPayload, SSHKeyPayload, or OtherPayload
 
 # Fetch and decrypt a single secret by ID
 secret = unlocked.get_secret("secret-uuid")
@@ -570,7 +572,7 @@ tunnel  = inkbox.tunnels.get("tunnel-uuid")
 inkbox.tunnels.update("tunnel-uuid", metadata={"env": "prod"})
 
 # Sign a CSR (passthrough tunnels only; edge tunnels return 409 TunnelTLSModeMismatch)
-signed = inkbox.tunnels.sign_csr("tunnel-uuid", csr_pem=csr_bytes)
+signed = inkbox.tunnels.sign_csr("tunnel-uuid", csr_pem=csr_pem_string)  # PEM as str
 ```
 
 To open the data plane from your own code use `inkbox.tunnels.connect(...)` (or `inkbox.tunnels.client.connect`); auth is the SDK client's API key sent as `x-api-key`. No per-tunnel connect secret to mint or rotate. The key must be admin-scoped in the tunnel's org, or agent-scoped to the tunnel's owning identity.
