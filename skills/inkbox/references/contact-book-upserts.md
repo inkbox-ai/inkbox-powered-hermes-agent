@@ -28,7 +28,7 @@ with Inkbox(api_key=os.environ['INKBOX_API_KEY']) as ink:
     for kwargs in ({'email': email}, {'phone': phone}):
         try:
             match = ink.contacts.lookup(**kwargs)
-            existing = match[0] if isinstance(match, list) and match else match
+            existing = match[0] if match else None  # lookup always returns list[Contact]
             if existing:
                 break
         except Exception:

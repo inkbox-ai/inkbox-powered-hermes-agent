@@ -20,8 +20,10 @@ For questions like “did it deliver / did it bounce / do you see it?”, query 
 Email:
 
 ```python
+# Message rows carry `status` (sent / delivered / bounced / failed / …) —
+# there is no separate `delivery_status` field on email messages.
 for msg in identity.iter_emails(direction="outbound"):
-    print(msg.to_addresses, msg.subject, msg.created_at, msg.delivery_status)
+    print(msg.to_addresses, msg.subject, msg.created_at, msg.status)
 ```
 
 SMS:
