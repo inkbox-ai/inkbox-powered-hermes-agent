@@ -71,27 +71,16 @@ with Inkbox(api_key=os.environ["INKBOX_API_KEY"]) as ink:
 ## Core Model
 
 ```
-Inkbox (admin-only client)
-├── .create_identity(agent_handle, *, display_name=, description=,
-│                    email_local_part=, sending_domain=,
-│                    tunnel=, phone_number=, vault_secret_ids=)
-│                              → AgentIdentity   (atomically creates mailbox + tunnel)
-├── .get_identity(agent_handle) → AgentIdentity
-├── .list_identities()        → list[AgentIdentitySummary]
-├── .mailboxes                → MailboxesResource   (list/get/update/search; no create/delete)
-├── .phone_numbers            → PhoneNumbersResource
-├── .tunnels                  → TunnelsResource     (list/get/update[metadata]/sign_csr)
-├── .api_keys                 → ApiKeysResource     (.create — mint identity-scoped keys)
-├── .texts                    → TextsResource
+Inkbox (client — authenticated with your identity-scoped API key)
+├── .get_identity(agent_handle) → AgentIdentity   (use os.environ["INKBOX_IDENTITY"])
+├── .texts                    → TextsResource          (search across your texts)
 ├── .mail_contact_rules       → MailContactRulesResource
 ├── .phone_contact_rules      → PhoneContactRulesResource
-├── .contacts                 → ContactsResource  (.access, .vcards)
-├── .notes                    → NotesResource     (.access)
-├── .vault                    → VaultResource
-├── .whoami()                 → WhoamiResponse
-└── .create_signing_key()     → SigningKey
+├── .contacts                 → ContactsResource       (.access, .vcards)
+├── .notes                    → NotesResource
+└── .vault                    → VaultResource
 
-AgentIdentity (identity-scoped helper)
+AgentIdentity (your own identity — everything you need at runtime)
 ├── .mailbox                 → IdentityMailbox          (always populated; 1:1 invariant)
 ├── .tunnel                  → Tunnel                   (always populated; 1:1 invariant)
 ├── .phone_number            → IdentityPhoneNumber | None
@@ -101,60 +90,30 @@ AgentIdentity (identity-scoped helper)
 └── text methods             (requires assigned phone number)
 ```
 
+Admin-only resources also exist on the client (`mailboxes`, `phone_numbers`, `tunnels`, `api_keys`, `whoami`, `create_signing_key`, `list_identities`, `create_identity`) but the agent's identity-scoped key returns 403 on their mutating surfaces. Stick to the resources above.
+
 **1:1:1 invariant.** Every live identity has exactly one mailbox and exactly one tunnel, created and deleted atomically with it. There are no longer standalone `mailboxes.create`/`delete` or `tunnels.create`/`delete`/`rotate_secret`/`restore` endpoints. Phone numbers remain optional and lifecycle-independent.
 
 **Global handle namespace.** `agent_handle` is globally unique across every Inkbox org and shares its namespace with tunnel names and platform-domain mailbox local-parts. Collisions raise `HandleUnavailableError(blocking_namespace=...)` on `create_identity` (see Error Handling below). The mailbox local part is forced to the handle on the platform domain (`@inkboxmail.com`); on a custom sending domain you can choose freely via `email_local_part=`. Once claimed, a handle is held permanently — soft-deleted identities still hold their slot, and identities on the platform domain cannot be renamed.
 
-## Agent Signup
+## Your Identity
 
-Public, no API key required: `Inkbox.signup(human_email, *, note_to_human, display_name=None, agent_handle=None, email_local_part=None)` returns a freshly-provisioned email address, organization, and a one-time API key. `note_to_human` is keyword-only. The 6-digit verification code from the email goes through `Inkbox.verify_signup(api_key, verification_code)` (positional). Resend the email with `Inkbox.resend_signup_verification(api_key)`; check claim status + restrictions with `Inkbox.get_signup_status(api_key)`. Until verified, the agent is rate-limited and recipient-restricted — verification unlocks full sending capabilities.
-
-## Identities
+The identity, mailbox, and tunnel already exist — they were created by `hermes setup` before this session started. The agent reads its own identity at runtime; it does not create new ones (`inkbox.create_identity` requires admin/JWT auth).
 
 ```python
-from inkbox import IdentityTunnelCreateOptions, IdentityPhoneNumberCreateOptions
+identity = inkbox.get_identity(os.environ["INKBOX_IDENTITY"])
 
-# Atomically provisions mailbox + tunnel; phone is optional.
-identity = inkbox.create_identity(
-    "sales-agent",
-    display_name="Sales Bot",                                   # optional
-    description="Inbound lead handler",                         # optional, org-internal
-    tunnel=IdentityTunnelCreateOptions(tls_mode="edge"),        # optional; "edge" is the default
-    phone_number=IdentityPhoneNumberCreateOptions(type="local", state="NY"),  # optional
-)
-identity = inkbox.get_identity("sales-agent")
-identities = inkbox.list_identities()  # → list[AgentIdentitySummary]
+# Your reachable channels — always populated for live identities.
+print(identity.mailbox.email_address)   # e.g. "sales-agent@inkboxmail.com"
+print(identity.tunnel.public_host)      # e.g. "sales-agent.inkboxwire.com"
+print(identity.phone_number.number if identity.phone_number else None)
 
-identity.update(display_name="Sales Bot v2")     # display_name now lives on the identity
-identity.update(status="paused")                 # or "active"
-identity.refresh()                               # re-fetch from API; updates cached channels
-identity.delete()                                # cascades to mailbox + tunnel + scoped API keys
+identity.refresh()                      # re-fetch from API; updates cached channels
+identity.update(display_name="Sales Bot v2")  # rename your own display name
+identity.update(status="paused")              # or "active" — pauses inbound routing
 ```
 
-**Handles can't be renamed in practice.** Any identity with a platform-domain (`@inkboxmail.com`) mailbox — i.e. every identity created without an explicit custom `sending_domain` — rejects `identity.update(new_handle=...)` with a 409: the handle is load-bearing for the email address. To change a handle, `identity.delete()` and `create_identity(new_handle, ...)`.
-
-## Channel Management
-
-```python
-# Mailbox + tunnel are created atomically with the identity.
-print(identity.mailbox.email_address)  # e.g. "sales-agent@inkboxmail.com"
-print(identity.tunnel.public_host)     # e.g. "sales-agent.inkboxwire.com"
-
-# Provision a phone number (the only optional channel).
-phone = identity.provision_phone_number(type="toll_free")       # or type="local", state="NY"
-print(phone.number)            # e.g. "+18005551234"
-
-# Link / unlink an existing phone number.
-identity.assign_phone_number("phone-number-uuid")
-identity.unlink_phone_number()
-```
-
-To switch an identity to a different handle/mailbox/tunnel, delete it and recreate — the deletion cascades through mailbox + tunnel + identity-scoped API keys and unlinks the phone:
-
-```python
-identity.delete()
-new_identity = inkbox.create_identity("new-handle", display_name="...")
-```
+**Handles are immutable in practice.** Any identity with a platform-domain (`@inkboxmail.com`) mailbox rejects `identity.update(new_handle=...)` with a 409 — the handle is load-bearing for the email address. Deleting and recreating identities is an admin operation; the agent never does it.
 
 ## Mail
 
@@ -530,83 +489,14 @@ code = unlocked.get_totp_code(secret_id)
 | `period_end` | `int` | Unix timestamp when the code expires |
 | `seconds_remaining` | `int` | Seconds until expiry |
 
-## Admin-only Resources
+## Org-level resources (mostly admin)
 
-### Mailboxes (`inkbox.mailboxes`)
+The `inkbox.mailboxes`, `inkbox.phone_numbers`, `inkbox.tunnels`, and `inkbox.api_keys` resources expose org-wide views and lifecycle controls. With an identity-scoped key the agent can read its own mailbox / phone-number / tunnel via the embedded shapes on `identity` and doesn't need these admin surfaces at runtime. The two endpoints an in-session agent might legitimately call:
 
-Mailbox lifecycle is owned by the identity: `create_identity()` provisions one atomically, `identity.delete()` cascades. There is no `mailboxes.create()` or `mailboxes.delete()` — those endpoints return 404.
+- `inkbox.phone_numbers.search_transcripts(number.id, q="...", party="remote"|"local", limit=...)` — full-text search across own call transcripts.
+- `inkbox.tunnels.connect(...)` — forwards to `from inkbox.tunnels.client import connect`; opens the data plane. The gateway already does this on startup; the agent doesn't need to call it directly.
 
-```python
-mailboxes = inkbox.mailboxes.list()
-mailbox   = inkbox.mailboxes.get("abc@inkboxmail.com")
-
-inkbox.mailboxes.update(mailbox.email_address, webhook_url="https://example.com/hook")
-inkbox.mailboxes.update(mailbox.email_address, webhook_url=None)   # remove webhook
-
-# `display_name` lives on the identity now — the SDK no longer accepts it
-# as a kwarg here (would TypeError before the request) and the underlying
-# PATCH endpoint 422s with a redirect hint. Use identity.update(display_name=...)
-# instead.
-
-# Switch contact-rule filter mode (admin-only — agent-scoped keys get 403)
-updated = inkbox.mailboxes.update(mailbox.email_address, filter_mode="whitelist")
-if updated.filter_mode_change_notice:
-    # Populated when filter_mode actually changed — tells you how many
-    # rules are now redundant under the new mode.
-    n = updated.filter_mode_change_notice
-    print(n.redundant_rule_count, n.redundant_rule_action, n.new_filter_mode)
-
-# Mailbox responses carry mailbox.agent_identity_id (always populated for
-# live customer mailboxes; null only on tombstones or system mailboxes).
-
-results = inkbox.mailboxes.search(mailbox.email_address, q="invoice", limit=20)
-```
-
-### Tunnels (`inkbox.tunnels`)
-
-Like mailboxes, tunnel lifecycle is owned by the identity. The surviving control-plane operations are read + metadata-only update + CSR signing.
-
-```python
-tunnels = inkbox.tunnels.list()
-tunnel  = inkbox.tunnels.get("tunnel-uuid")
-
-# Metadata-only update — the only PATCH-able field is `metadata`.
-inkbox.tunnels.update("tunnel-uuid", metadata={"env": "prod"})
-
-# Sign a CSR (passthrough tunnels only; edge tunnels return 409 TunnelTLSModeMismatch)
-signed = inkbox.tunnels.sign_csr("tunnel-uuid", csr_pem=csr_pem_string)  # PEM as str
-```
-
-To open the data plane from your own code use `inkbox.tunnels.connect(...)` (the resource method forwards to `from inkbox.tunnels.client import connect`); auth is the SDK client's API key sent as `x-api-key`. No per-tunnel connect secret to mint or rotate. Your identity-scoped key already has the authority to connect to its own tunnel.
-
-### API Keys (`inkbox.api_keys`) — admin / JWT only
-
-Minting new API keys requires an admin key or a human JWT; identity-scoped keys (what this agent runs as) get 403 here. The resource exists, but in normal operation the agent doesn't call it — its own key was minted by `hermes setup` before the gateway started and is the only key the data plane needs.
-
-### Phone Numbers (`inkbox.phone_numbers`)
-
-```python
-numbers = inkbox.phone_numbers.list()
-number  = inkbox.phone_numbers.get("phone-number-uuid")
-number  = inkbox.phone_numbers.provision(agent_handle="my-agent", type="toll_free")
-local   = inkbox.phone_numbers.provision(agent_handle="my-agent", type="local", state="NY")
-
-inkbox.phone_numbers.update(
-    number.id,
-    incoming_call_action="webhook",            # "webhook", "auto_accept", or "auto_reject"
-    incoming_call_webhook_url="https://...",
-)
-inkbox.phone_numbers.update(
-    number.id,
-    incoming_call_action="auto_accept",
-    client_websocket_url="wss://...",
-)
-
-hits = inkbox.phone_numbers.search_transcripts(number.id, q="refund", party="remote", limit=50)
-inkbox.phone_numbers.release(number.id)
-```
-
-Phone numbers carry the same `filter_mode` / `agent_identity_id` / `filter_mode_change_notice` fields as mailboxes; flipping `filter_mode` is admin-only and returns a change-notice when the value actually changed.
+Anything else under these resources (list/create/update/delete/provision/release/rotate/filter-mode flips) requires admin or JWT auth and returns 403 for an identity-scoped key.
 
 ## Contact Rules
 
@@ -618,8 +508,7 @@ from inkbox import (
     DuplicateContactRuleError,
 )
 
-# Mail rules — scoped to a single mailbox. New rules always start active;
-# call `update(..., status="paused")` afterwards to pause one.
+# Add a rule to the agent's mailbox. New rules start active.
 rule = inkbox.mail_contact_rules.create(
     mailbox.email_address,
     action=MailRuleAction.ALLOW,         # or BLOCK
@@ -628,11 +517,6 @@ rule = inkbox.mail_contact_rules.create(
 )
 inkbox.mail_contact_rules.list(mailbox.email_address)
 inkbox.mail_contact_rules.get(mailbox.email_address, rule.id)
-inkbox.mail_contact_rules.update(mailbox.email_address, rule.id, status="paused")  # admin-only
-inkbox.mail_contact_rules.delete(mailbox.email_address, rule.id)                   # admin-only
-
-# Admin-only list; optionally narrow to a single mailbox_id
-all_rules = inkbox.mail_contact_rules.list_all(mailbox_id=str(mailbox.id))
 
 # Duplicate (match_type, match_target) on the same mailbox raises 409:
 try:
@@ -651,18 +535,16 @@ inkbox.phone_contact_rules.create(
     match_target="+15551234567",
 )
 inkbox.phone_contact_rules.list(number.id)
-inkbox.phone_contact_rules.list_all(phone_number_id=str(number.id))
 ```
+
+Pausing, updating, or deleting an existing rule (and `list_all` across mailboxes / numbers) is admin-only — agent-scoped keys get 403. The pattern for the agent is: create new rules to add allow/block entries; don't try to mutate existing ones.
 
 ## Contacts
 
-Admin-only address book with per-identity access grants and vCard import/export. For routed-session contact-book upsert patterns, transport-sender-vs-described-person pitfalls, and user-facing distinctions between the Inkbox contact book and Hermes memory/user profile, see `references/contact-book-upserts.md`.
+Org-wide address book. The agent can CRUD contacts it's been granted access to (the default `wildcard` setting gives every active identity read+write access). For routed-session contact-book upsert patterns, transport-sender-vs-described-person pitfalls, and user-facing distinctions between the Inkbox contact book and Hermes memory/user profile, see `references/contact-book-upserts.md`.
 
 ```python
-from inkbox import (
-    Contact, ContactEmail, ContactPhone, ContactAddress,
-    RedundantContactAccessGrantError,
-)
+from inkbox import Contact, ContactEmail, ContactPhone, ContactAddress
 
 # CRUD
 contact = inkbox.contacts.create(
@@ -718,17 +600,10 @@ payload = dict(
 )
 contact = inkbox.contacts.update(str(existing.id), **payload) if existing else inkbox.contacts.create(**payload)
 
-# Access grants (admin + JWT only; agents can self-revoke)
+# Inspect who has access to a contact. Granting is admin-only;
+# agents can self-revoke their own access if they need to.
 inkbox.contacts.access.list(str(contact.id))
-inkbox.contacts.access.grant(str(contact.id), identity_id="agent-uuid")
-inkbox.contacts.access.grant(str(contact.id), wildcard=True)       # every active identity
-inkbox.contacts.access.revoke(str(contact.id), "agent-uuid")
-
-# Redundant grants (e.g. per-identity on top of wildcard) raise 409
-try:
-    inkbox.contacts.access.grant(str(contact.id), identity_id="agent-uuid")
-except RedundantContactAccessGrantError as e:
-    print(e.error, e.detail_message)
+inkbox.contacts.access.revoke(str(contact.id), "<own-identity-uuid>")
 
 # vCards
 result = inkbox.contacts.vcards.import_vcards(vcf_text)   # bulk, ≤5 MiB, ≤1000 cards
@@ -741,74 +616,21 @@ vcf = inkbox.contacts.vcards.export_vcard(str(contact.id))  # vCard 4.0 string
 
 ## Notes
 
-Admin-only free-form notes with per-identity access grants. Identities must be granted access explicitly — there is no wildcard for notes.
+Free-form notes the agent can read/write for itself. Per-identity access grants are admin-only — the agent works with whatever notes it was granted access to at setup.
 
 ```python
 note = inkbox.notes.create(body="Customer prefers email follow-up.", title="Ada")
 inkbox.notes.get(str(note.id))
-inkbox.notes.list(q="email", identity_id="agent-uuid", order="recent", limit=50)
+inkbox.notes.list(q="email", order="recent", limit=50)
 inkbox.notes.update(str(note.id), body="Updated body")
 inkbox.notes.update(str(note.id), title=None)   # clear title (body cannot be null)
 inkbox.notes.delete(str(note.id))
-
-# Access grants (admin + JWT only)
-inkbox.notes.access.list(str(note.id))
-inkbox.notes.access.grant(str(note.id), identity_id="agent-uuid")
-inkbox.notes.access.revoke(str(note.id), "agent-uuid")
 ```
-
-## Whoami
-
-```python
-# Check the authenticated caller's identity
-info = inkbox.whoami()
-print(info.auth_type)        # "api_key" or "jwt"
-print(info.organization_id)
-```
-
-Returns `WhoamiApiKeyResponse` (with `key_id`, `label`, `creator_type`, `auth_subtype`, etc.) or `WhoamiJwtResponse` (with `email`, `org_role`, etc.) based on `auth_type`.
-
-For branching on API-key scope, compare against the exported constants:
-
-```python
-from inkbox import (
-    AUTH_SUBTYPE_API_KEY_ADMIN_SCOPED,
-    AUTH_SUBTYPE_API_KEY_AGENT_SCOPED_CLAIMED,
-    AUTH_SUBTYPE_API_KEY_AGENT_SCOPED_UNCLAIMED,
-)
-
-if info.auth_type == "api_key" and info.auth_subtype == AUTH_SUBTYPE_API_KEY_ADMIN_SCOPED:
-    ...   # admin-only operations (filter_mode flips, rule updates/deletes, etc.)
-```
-
-## Webhooks & Signature Verification
-
-Webhooks are configured directly on the mailbox or phone number — no separate registration.
-
-```python
-from inkbox import verify_webhook
-
-# Rotate signing key (plaintext returned once — save it)
-key = inkbox.create_signing_key()
-
-# Verify an incoming webhook request
-is_valid = verify_webhook(
-    payload=raw_body,                                    # bytes
-    headers=request.headers,
-    secret="whsec_...",
-)
-```
-
-Algorithm: HMAC-SHA256 over `"{request_id}.{timestamp}.{body}"`.
 
 ## Error Handling
 
 ```python
-from inkbox import (
-    InkboxAPIError,
-    DuplicateContactRuleError,
-    RedundantContactAccessGrantError,
-)
+from inkbox import InkboxAPIError, DuplicateContactRuleError
 
 try:
     identity = inkbox.get_identity("unknown")
@@ -817,13 +639,11 @@ except InkboxAPIError as e:
     print(e.detail)        # str for legacy errors, dict for structured ones
 ```
 
-`InkboxAPIError.detail` can now be a `dict` for structured responses (e.g. contact-rule / access conflicts). Catch the narrower subclasses when you need the parsed fields:
+`InkboxAPIError.detail` can be a `dict` for structured responses. The one narrower subclass worth catching at runtime:
 
 - `DuplicateContactRuleError` — 409 when creating a contact rule with an already-taken `(match_type, match_target)` on the same resource. Exposes `.existing_rule_id: UUID`.
-- `RedundantContactAccessGrantError` — 409 when a contact-access grant is redundant (e.g. per-identity grant on top of an active wildcard). Exposes `.error` and `.detail_message`.
-- `HandleUnavailableError` (from `inkbox.identities.exceptions`) — 409 from `create_identity()` when the requested `agent_handle` collides in the unified global namespace. Exposes `.blocking_namespace: Literal["identities","tunnels","mail",None]` so the caller can tell whether the collision was against an existing identity, an existing tunnel, or a platform-domain mailbox local-part. (Identities on the platform domain cannot be renamed, so this error effectively only fires at create time on this fork.)
-- `TunnelNotProvisioned` (from `inkbox.tunnels.exceptions`) — raised by `inkbox.tunnels.connect(...)` when no tunnel exists for the supplied handle. Recovery: recreate the identity (tunnels are atomically provisioned with it).
-- `TunnelRemoved` (from `inkbox.tunnels.exceptions`) — raised when the local `state.json` references a `tunnel_id` that the server returned 404 for. Clear the state directory and call `create_identity(...)`.
+
+Most other classes in `inkbox.exceptions` (`HandleUnavailableError`, `TunnelNotProvisioned`, `TunnelRemoved`, `RedundantContactAccessGrantError`) fire on admin operations the agent doesn't perform — let them propagate as plain `InkboxAPIError` if they ever do show up.
 
 ## Key Conventions
 
@@ -839,7 +659,7 @@ except InkboxAPIError as e:
 # Inkbox CLI
 
 
-Command-line interface for the Inkbox API — identities, email, phone, text/SMS, encrypted vault, mailboxes, phone numbers, signing keys, and webhook utilities.
+Command-line interface for the Inkbox API — identities, email, phone, text/SMS, encrypted vault, contacts, notes, and contact rules.
 
 ## Auth & Runtime
 
@@ -894,53 +714,26 @@ npm --prefix cli run dev -- email list -i support-bot --limit 10
 
 ## High-Risk Operations
 
-These commands can send real traffic or mutate real resources. Confirm with the user before running them:
+These commands send real traffic. Confirm with the user before running them:
 
-- `signup create`
 - `email send`
 - `text send`
 - `phone call`
-- `identity delete` (cascades to its mailbox + tunnel + scoped API keys)
-- `email delete`
-- `email delete-thread`
+- `email delete` / `email delete-thread`
 - `vault delete`
-- `mailbox update --filter-mode ...` (admin-only; flips allow/block semantics for that mailbox)
-- `number release`
-- `number update --filter-mode ...` (admin-only; same caveat as mailbox)
-- `signing-key create`
-
-`contacts delete`, `notes delete`, `mailbox rules delete`, `number rules delete` affect downstream filtering and access — confirm intent before running.
+- `contacts delete`, `notes delete`, `mailbox rules delete`, `number rules delete` — affect downstream filtering and access; confirm intent.
 
 Also confirm before creating or rotating secrets if the values were not explicitly provided by the user.
-
-## Agent Signup
-
-```bash
-inkbox signup create
-inkbox signup verify --code <code>
-inkbox signup resend-verification
-inkbox signup status
-```
-
-`signup create` is the only one that does not require an API key. The follow-up commands need the signup-issued API key passed back via `--api-key` or `INKBOX_API_KEY` — the CLI does not persist it automatically. Until verified, the agent is rate-limited and recipient-restricted; verification unlocks full sending.
 
 ## Identities
 
 ```bash
-inkbox identity list
 inkbox identity get <handle>
-inkbox identity create <handle> [--display-name <name>] [--description <text>]
-inkbox identity delete <handle>
 inkbox identity update <handle> [--display-name <name>] [--description <text>] [--status active|paused]
 inkbox identity refresh <handle>
 ```
 
-Notes:
-
-- `identity create` atomically provisions the agent identity, its mailbox, and its tunnel. The handle is globally unique across all Inkbox orgs and is reused as the platform-domain mailbox local part and the tunnel name. A 409 means the handle collides somewhere in that shared namespace.
-- `identity get` and `identity refresh` return mailbox, tunnel, and phone number assignments.
-- `identity delete` cascades: mailbox + tunnel are tombstoned and any identity-scoped API keys are revoked.
-- Most email, phone, and text commands require `-i, --identity <handle>`.
+`identity create` / `identity delete` / `identity list` require admin/JWT auth and aren't usable from the agent's CLI session. Most email, phone, and text commands require `-i, --identity <handle>`.
 
 ### Identity-Scoped Secrets
 
@@ -1065,59 +858,23 @@ Secret type flags:
 --data <json> [--notes <text>]
 ```
 
-## Admin-Only Mailboxes
+## Mailbox / Number Contact Rules
+
+Per-mailbox or per-number allow/block rules. The agent can list and create; pausing, updating, or deleting an existing rule is admin-only (403 for the agent's key).
 
 ```bash
-inkbox mailbox list
-inkbox mailbox get <email-address>
-inkbox mailbox update <email-address> [--webhook-url <url>] [--filter-mode whitelist|blacklist]
-```
-
-Mailbox creation and deletion are owned by the identity now — use `inkbox identity create` / `inkbox identity delete`. `mailbox update` no longer accepts `--display-name`; that field moved to the identity (`inkbox identity update <handle> --display-name <name>`).
-
-`mailbox list` / `get` / `update` rows include `filterMode` and `agentIdentityId`. `--filter-mode` is admin-only; when the value actually changes, a note is printed to **stderr** telling you how many existing rules are now redundant under the new mode.
-
-### Mailbox Contact Rules (`inkbox mailbox rules …`)
-
-Per-mailbox allow/block rules (combined with the mailbox's `filterMode`).
-
-```bash
-inkbox mailbox rules list --mailbox <email> [--action allow|block] [--match-type exact_email|domain] [--limit <n>] [--offset <n>]
-inkbox mailbox rules list --all-mailboxes [--mailbox-id <id>] [--action …] [--match-type …]    # admin-only
+inkbox mailbox rules list --mailbox <email> [--action allow|block] [--match-type exact_email|domain] [--limit <n>]
 inkbox mailbox rules get <rule-id> --mailbox <email>
 inkbox mailbox rules create --mailbox <email> --action allow|block --match-type exact_email|domain --match-target <value> [--status active|paused]
-inkbox mailbox rules update <rule-id> --mailbox <email> [--action allow|block] [--status active|paused]   # admin-only
-inkbox mailbox rules delete <rule-id> --mailbox <email>                                                    # admin-only
-```
 
-## Admin-Only Phone Numbers
-
-```bash
-inkbox number list
-inkbox number get <id>
-inkbox number provision --handle <handle> [--type toll_free|local] [--state NY]
-inkbox number update <id> [--incoming-call-action auto_accept|auto_reject|webhook] [--filter-mode whitelist|blacklist] ...
-inkbox number release <number-id>
-```
-
-Use `--state` only when provisioning a local number. Phone-number rows also carry `filterMode` / `agentIdentityId`; `--filter-mode` is admin-only and prints a stderr note when the value changes.
-
-### Number Contact Rules (`inkbox number rules …`)
-
-Per-number allow/block rules (combined with the number's `filterMode`).
-
-```bash
-inkbox number rules list --number <id> [--action allow|block] [--match-type exact_number] [--limit <n>] [--offset <n>]
-inkbox number rules list --all-numbers [--phone-number-id <id>] [--action …] [--match-type …]   # admin-only
+inkbox number rules list --number <id> [--action allow|block] [--match-type exact_number] [--limit <n>]
 inkbox number rules get <rule-id> --number <id>
 inkbox number rules create --number <id> --action allow|block --match-target <e164> [--match-type exact_number] [--status active|paused]
-inkbox number rules update <rule-id> --number <id> [--action allow|block] [--status active|paused]   # admin-only
-inkbox number rules delete <rule-id> --number <id>                                                    # admin-only
 ```
 
 ## Contacts
 
-Admin-only address book. All commands hit the admin endpoints; agents see contacts they've been granted access to.
+Org-wide address book — the agent reads + upserts whatever contacts it has access to (default wildcard grants read+write to every active identity).
 
 ```bash
 inkbox contacts list [--q <query>] [--order name|recent] [--limit <n>] [--offset <n>]
@@ -1128,41 +885,22 @@ inkbox contacts delete <contact-id>
 inkbox contacts lookup (--email <email> | --email-contains <s> | --email-domain <d> | --phone <e164> | --phone-contains <s>)
 inkbox contacts import <file.vcf>                  # bulk vCard import (≤5 MiB, ≤1000 cards)
 inkbox contacts export <contact-id> [--out <file>] # vCard 4.0 to stdout or file
-
-# Per-contact access grants
-inkbox contacts access list <contact-id>
-inkbox contacts access grant <contact-id> (--identity <uuid> | --wildcard)   # admin + JWT only
-inkbox contacts access revoke <contact-id> <identity-id>
+inkbox contacts access list <contact-id>           # who can see this contact (grant/revoke are admin)
 ```
 
 `contacts lookup` requires exactly one filter flag. For `create` / `update`, construct the payload carefully — fields include `preferredName`, `givenName`, `familyName`, `companyName`, `jobTitle`, `birthday`, `notes`, and lists `emails` / `phones` / `websites` / `dates` / `addresses` / `customFields` (each list item has `label` / `value`).
 
 ## Notes
 
-Admin-only free-form notes with per-identity grants (no wildcard).
+Free-form notes the agent can read/write. Per-note access grants are admin-only.
 
 ```bash
-inkbox notes list [--q <query>] [--identity <uuid>] [--order recent|created] [--limit <n>] [--offset <n>]
+inkbox notes list [--q <query>] [--order recent|created] [--limit <n>] [--offset <n>]
 inkbox notes get <note-id>
 inkbox notes create --body <text> [--title <text>]
 inkbox notes update <note-id> [--title <text>] [--body <text>]   # pass --title "" to clear
 inkbox notes delete <note-id>
-
-# Per-note access grants
-inkbox notes access list <note-id>
-inkbox notes access grant <note-id> <identity-id>    # admin + JWT only
-inkbox notes access revoke <note-id> <identity-id>
 ```
-
-## Whoami, Signing Keys, Webhooks
-
-```bash
-inkbox whoami
-inkbox signing-key create
-inkbox webhook verify --payload <payload> --secret <secret> -H "X-Header: value"
-```
-
-Use `whoami --json` when you need the authenticated caller shape exactly.
 
 ## Practical Guidance
 
