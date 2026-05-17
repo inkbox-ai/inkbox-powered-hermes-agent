@@ -1097,6 +1097,7 @@ AUTHOR_MAP = {
     # Inkbox fork maintainers
     "dima@vectorly.app": "dimavrem22",
     "dimavrem22@gmail.com": "dimavrem22",
+    "mfzeidan@gmail.com": "mfzeidan",
 }
 
 
