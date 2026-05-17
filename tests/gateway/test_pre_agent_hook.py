@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import sys
 from collections import OrderedDict
@@ -89,8 +88,11 @@ def _runner(
     )
     runner.adapters = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), emit_collect=AsyncMock())
+    runner.hooks.loaded_hooks = []
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store._entries = {session_entry.session_key: session_entry}
+    runner.session_store._ensure_loaded = MagicMock()
     runner.session_store.load_transcript.return_value = []
     runner.session_store.append_to_transcript = MagicMock()
     runner.session_store.rewrite_transcript = MagicMock()
@@ -102,11 +104,17 @@ def _runner(
     runner._pending_model_notes = {}
     runner._session_db = None
     runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._session_run_generation = {}
+    runner._busy_ack_ts = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._pending_skills_reload_notes = {}
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
+    runner._prefill_messages = None
+    runner._ephemeral_system_prompt = ""
     runner._show_reasoning = False
     runner._set_session_env = lambda _context: []
     runner._clear_session_env = MagicMock()
@@ -119,6 +127,26 @@ def _runner(
     runner._send_voice_reply = AsyncMock()
     runner._deliver_media_from_response = AsyncMock()
     runner._clear_restart_failure_count = MagicMock()
+    runner._draining = False
+    runner._get_proxy_url = lambda: None
+    runner._resolve_session_agent_runtime = lambda **_kwargs: ("test-model", {})
+    runner._resolve_session_reasoning_config = lambda **_kwargs: None
+    runner._resolve_turn_agent_config = lambda _message, model, runtime: {
+        "model": model,
+        "runtime": runtime,
+        "request_overrides": None,
+    }
+    runner._load_service_tier = lambda: None
+    runner._agent_cache_lock = None
+    runner._agent_cache = None
+    runner._init_cached_agent_for_turn = MagicMock()
+    runner._enforce_agent_cache_cap = MagicMock()
+    runner._consume_pending_native_image_paths = MagicMock(return_value=[])
+    runner._evict_cached_agent = MagicMock()
+    runner._is_intentional_model_switch = lambda *_args, **_kwargs: True
+    runner._is_telegram_topic_lane = lambda *_args, **_kwargs: False
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: None
+    runner._reply_anchor_for_event = lambda event: getattr(event, "message_id", None)
     return runner
 
 
@@ -311,6 +339,90 @@ def _inkbox_raw(text_id: str, phone: str, text: str) -> dict:
     }
 
 
+class _QueueDrainAdapter:
+    def __init__(self):
+        self._pending_messages = {}
+        self._active_sessions = {}
+        self._post_delivery_callbacks = {}
+        self.sent = []
+        self.exact_replies = []
+
+    def get_pending_message(self, session_key):
+        return self._pending_messages.pop(session_key, None)
+
+    def has_pending_interrupt(self, session_key):
+        return session_key in self._pending_messages
+
+    async def send(self, chat_id, content=None, *args, **kwargs):
+        text = content if content is not None else (args[0] if args else "")
+        self.sent.append((chat_id, text))
+        return SimpleNamespace(success=True, message_id=f"send-{len(self.sent)}")
+
+    async def _send_with_retry(self, *, chat_id, content, **kwargs):
+        self.exact_replies.append((chat_id, content))
+        return SimpleNamespace(success=True, message_id=f"reply-{len(self.exact_replies)}")
+
+    async def send_typing(self, chat_id, **kwargs):
+        return None
+
+
+def _install_fast_agent(monkeypatch, responses, agent_calls):
+    import gateway.run as run_mod
+    import hermes_cli.tools_config as tools_config
+    import run_agent
+
+    monkeypatch.setattr(
+        run_mod,
+        "_load_gateway_config",
+        lambda: {
+            "agent": {"gateway_notify_interval": 0},
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+        },
+    )
+    monkeypatch.setattr(run_mod, "_resolve_gateway_model", lambda: "test-model")
+    monkeypatch.setattr(
+        run_mod, "_reload_runtime_env_preserving_config_authority", lambda: None
+    )
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_args, **_kwargs: set())
+
+    class FastAgent:
+        def __init__(self, *args, **kwargs):
+            self.model = kwargs.get("model") or "test-model"
+            self.session_id = kwargs.get("session_id")
+            self.tools = []
+            self.context_compressor = SimpleNamespace(
+                last_prompt_tokens=0,
+                context_length=0,
+            )
+            self.session_prompt_tokens = 0
+            self.session_completion_tokens = 0
+            self.is_interrupted = False
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt") or ""
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            agent_calls.append((message, self.ephemeral_system_prompt))
+            if not responses:
+                raise AssertionError("unexpected extra agent run")
+            return responses.pop(0)
+
+        def interrupt(self, _reason=None):
+            self.is_interrupted = True
+
+        def get_activity_summary(self):
+            return {
+                "seconds_since_activity": 0,
+                "api_call_count": 1,
+                "max_iterations": 90,
+                "last_activity_desc": "test",
+            }
+
+    monkeypatch.setattr(run_agent, "AIAgent", FastAgent)
+
+
+async def _run_inline_executor(func, *args):
+    return func(*args)
+
+
 @pytest.mark.asyncio
 async def test_live_inkbox_sms_continue_is_coerced_to_hold(caplog):
     caplog.set_level("INFO")
@@ -342,6 +454,7 @@ async def test_live_inkbox_sms_continue_is_coerced_to_hold(caplog):
     assert result is None
     runner._run_agent.assert_not_called()
     assert "Need help" not in caplog.text
+    assert "context that must not be sent live" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -379,15 +492,155 @@ async def test_queued_inkbox_sms_continue_is_coerced_to_hold():
     runner._run_pre_agent_hook.assert_awaited_once()
 
 
-def test_queued_followup_drain_uses_pre_agent_hook_gate():
-    from gateway.run import GatewayRunner
+@pytest.mark.asyncio
+async def test_queued_followup_drain_runs_hook_before_recursive_agent(monkeypatch):
+    source = _source()
+    session_entry = _session_entry(source)
+    session_key = build_session_key(source)
+    adapter = _QueueDrainAdapter()
+    queued = _event("queued follow-up", source=source, message_id="queued-1")
+    adapter._pending_messages[session_key] = queued
+    config = GatewayConfig(pre_agent_hook=_hook_config())
+    runner = _runner(config=config, source=source, session_entry=session_entry)
+    runner.adapters[source.platform] = adapter
+    runner._run_in_executor_with_context = _run_inline_executor
 
-    source_text = inspect.getsource(GatewayRunner._run_agent)
-    gate = "hook_action, context_prompt, exact_reply = await self._apply_pre_agent_hook_for_turn"
-    recursive_run = "followup_result = await self._run_agent"
+    agent_calls = []
+    _install_fast_agent(
+        monkeypatch,
+        responses=[
+            {
+                "final_response": "first response",
+                "messages": [{"role": "assistant", "content": "first response"}],
+                "api_calls": 1,
+            },
+            {
+                "final_response": "second response",
+                "messages": [{"role": "assistant", "content": "second response"}],
+                "api_calls": 1,
+            },
+        ],
+        agent_calls=agent_calls,
+    )
 
-    assert gate in source_text
-    assert source_text.index(gate) < source_text.index(recursive_run)
+    hook_seen = []
+
+    async def hook(payload):
+        hook_seen.append(payload["message"]["body_text"])
+        return {
+            "ok": True,
+            "action": "continue",
+            "hydration": {"prompt_context": "[hook context for queued follow-up]"},
+            "outbound": {"mode": "hold_no_reply"},
+        }
+
+    runner._run_pre_agent_hook = AsyncMock(side_effect=hook)
+
+    result = await runner._run_agent(
+        message="initial",
+        context_prompt="base context",
+        history=[],
+        source=source,
+        session_id=session_entry.session_id,
+        session_key=session_key,
+        run_generation=1,
+    )
+
+    assert result["final_response"] == "second response"
+    assert hook_seen == ["queued follow-up"]
+    assert [call[0] for call in agent_calls] == ["initial", "queued follow-up"]
+    assert "[hook context for queued follow-up]" in agent_calls[1][1]
+
+
+@pytest.mark.asyncio
+async def test_multiple_queued_inkbox_sms_followups_keep_order_and_hit_hook(
+    monkeypatch, caplog
+):
+    caplog.set_level("DEBUG")
+    source = _inkbox_sms_source("contact-1", "+15555550101")
+    session_entry = _session_entry(source)
+    session_key = build_session_key(source)
+    adapter = _QueueDrainAdapter()
+    first = _event(
+        "[inkbox:sms from=+15555550101 | contact_id=contact-1]\nPRIVATE FIRST BODY",
+        source=source,
+        raw_message=_inkbox_raw("sms-queued-1", "+15555550101", "PRIVATE FIRST BODY"),
+        message_id="sms-queued-1",
+    )
+    second = _event(
+        "[inkbox:sms from=+15555550101 | contact_id=contact-1]\nPRIVATE SECOND BODY",
+        source=source,
+        raw_message=_inkbox_raw("sms-queued-2", "+15555550101", "PRIVATE SECOND BODY"),
+        message_id="sms-queued-2",
+    )
+    adapter._pending_messages[session_key] = first
+    config = GatewayConfig(
+        pre_agent_hook=_hook_config(platform="inkbox", channel="sms")
+    )
+    runner = _runner(config=config, source=source, session_entry=session_entry)
+    runner.adapters[source.platform] = adapter
+    runner._queued_events = {session_key: [second]}
+    runner._run_in_executor_with_context = _run_inline_executor
+
+    agent_calls = []
+    _install_fast_agent(
+        monkeypatch,
+        responses=[
+            {
+                "final_response": "base one",
+                "messages": [{"role": "assistant", "content": "base one"}],
+                "api_calls": 1,
+            },
+            {
+                "final_response": "base two",
+                "messages": [{"role": "assistant", "content": "base two"}],
+                "api_calls": 1,
+            },
+        ],
+        agent_calls=agent_calls,
+    )
+
+    hook_ids = []
+
+    async def hook(payload):
+        hook_ids.append(payload["source"]["message_id"])
+        return {
+            "ok": True,
+            "action": "reply",
+            "outbound": {
+                "mode": "send_exact",
+                "text": f"exact reply for {payload['source']['message_id']}",
+            },
+        }
+
+    runner._run_pre_agent_hook = AsyncMock(side_effect=hook)
+
+    await runner._run_agent(
+        message="initial one",
+        context_prompt="base context",
+        history=[],
+        source=source,
+        session_id=session_entry.session_id,
+        session_key=session_key,
+        run_generation=1,
+    )
+    await runner._run_agent(
+        message="initial two",
+        context_prompt="base context",
+        history=[],
+        source=source,
+        session_id=session_entry.session_id,
+        session_key=session_key,
+        run_generation=1,
+    )
+
+    assert hook_ids == ["sms-queued-1", "sms-queued-2"]
+    assert [reply[1] for reply in adapter.exact_replies] == [
+        "exact reply for sms-queued-1",
+        "exact reply for sms-queued-2",
+    ]
+    assert "PRIVATE FIRST BODY" not in caplog.text
+    assert "PRIVATE SECOND BODY" not in caplog.text
 
 
 def test_live_inkbox_sms_generate_draft_is_coerced_to_hold():
@@ -425,6 +678,7 @@ async def test_auto_reset_flags_are_persisted_before_hook_hold():
     session_entry = _session_entry(source)
     session_entry.was_auto_reset = True
     session_entry.auto_reset_reason = "idle"
+    session_entry.is_fresh_reset = True
     config = GatewayConfig(pre_agent_hook=_hook_config())
     runner = _runner(config=config, source=source, session_entry=session_entry)
     runner._run_pre_agent_hook = AsyncMock(
@@ -439,6 +693,7 @@ async def test_auto_reset_flags_are_persisted_before_hook_hold():
     assert result is None
     assert session_entry.was_auto_reset is False
     assert session_entry.auto_reset_reason is None
+    assert session_entry.is_fresh_reset is False
     runner.session_store._save.assert_called()
     runner._run_agent.assert_not_called()
 

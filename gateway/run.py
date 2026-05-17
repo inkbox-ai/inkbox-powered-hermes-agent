@@ -9701,6 +9701,19 @@ class GatewayRunner:
         rendered = str(text).strip() if text is not None else ""
         return rendered or _INKBOX_SMS_HELP_TEXT_DEFAULT
 
+    def _pending_message_log_preview(
+        self,
+        *,
+        event: Optional[MessageEvent],
+        text: Optional[str],
+    ) -> str:
+        if event is not None and self._is_inkbox_sms_event(event):
+            return "[inkbox sms redacted]"
+        raw_text = str(text or "")
+        if raw_text.lstrip().startswith("[inkbox:sms"):
+            return "[inkbox sms redacted]"
+        return raw_text[:40]
+
     async def _handle_inkbox_sms_user_command(
         self,
         event: MessageEvent,
@@ -16992,7 +17005,13 @@ class GatewayRunner:
                         pending = interrupt_message
                 elif pending_event:
                     pending = pending_event.text or _build_media_placeholder(pending_event)
-                    logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                    logger.debug(
+                        "Processing queued message after agent completion: '%s...'",
+                        self._pending_message_log_preview(
+                            event=pending_event,
+                            text=pending,
+                        ),
+                    )
 
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
@@ -17036,7 +17055,13 @@ class GatewayRunner:
                 pending = None
 
             if pending_event or pending:
-                logger.debug("Processing pending message: '%s...'", pending[:40])
+                logger.debug(
+                    "Processing pending message: '%s...'",
+                    self._pending_message_log_preview(
+                        event=pending_event,
+                        text=pending,
+                    ),
+                )
 
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent
