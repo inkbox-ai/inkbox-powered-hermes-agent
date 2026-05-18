@@ -794,6 +794,101 @@ class TestInkboxAuthorization:
         assert self._runner()._is_user_authorized(source) is False
 
 
+class TestInkboxSmsCommandSurface:
+    def _runner(self, *, sms_help_text=None):
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        config = GatewayConfig()
+        if sms_help_text is not None:
+            config.platforms[Platform.INKBOX] = PlatformConfig(
+                enabled=True,
+                extra={"sms_help_text": sms_help_text},
+            )
+        runner = GatewayRunner(config)
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved = MagicMock(return_value=False)
+        return runner
+
+    def _sms_event(self, text="/help"):
+        from gateway.session import SessionSource
+
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.COMMAND,
+            source=SessionSource(
+                platform=Platform.INKBOX,
+                chat_id="contact-uuid-123",
+                chat_type="dm",
+                user_id="contact-uuid-123",
+                user_name="Alex",
+                user_id_alt="+15555550101",
+            ),
+            raw_message={
+                "event_type": "text.received",
+                "data": {"text_message": {"remote_phone_number": "+15555550101"}},
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_sms_help_is_compact_and_end_user_safe(self):
+        result = await self._runner()._handle_help_command(self._sms_event("/help"))
+
+        assert len(result) < 500
+        assert "Commands: /help, /reset, /status, /stop" in result
+        assert "/model" not in result
+        assert "/debug" not in result
+        assert "/approve" not in result
+
+    @pytest.mark.asyncio
+    async def test_sms_help_text_can_be_configured(self):
+        result = await self._runner(
+            sms_help_text="Custom SMS help. Text your request normally.",
+        )._handle_help_command(self._sms_event("/help"))
+
+        assert result == "Custom SMS help. Text your request normally."
+
+    @pytest.mark.asyncio
+    async def test_sms_commands_uses_same_compact_surface(self):
+        result = await self._runner()._handle_commands_command(self._sms_event("/commands"))
+
+        assert len(result) < 500
+        assert "Text what you need" in result
+        assert "/kanban" not in result
+
+    @pytest.mark.asyncio
+    async def test_sms_dev_command_is_blocked(self):
+        result = await self._runner()._handle_inkbox_sms_user_command(
+            self._sms_event("/debug"),
+            canonical_command="debug",
+            typed_command="debug",
+        )
+
+        assert result == "I don't know that command. Try /help."
+        assert "operator" not in result
+        assert "/help" in result
+        assert "debug report" not in result
+
+    def test_email_command_surface_is_not_treated_as_sms(self):
+        from gateway.session import SessionSource
+
+        event = MessageEvent(
+            text="/help",
+            message_type=MessageType.COMMAND,
+            source=SessionSource(
+                platform=Platform.INKBOX,
+                chat_id="contact-uuid-123",
+                chat_type="dm",
+                user_id="contact-uuid-123",
+                user_name="Alex",
+                user_id_alt="alex@example.com",
+            ),
+            raw_message={"event_type": "message.received"},
+        )
+
+        assert self._runner()._is_inkbox_sms_event(event) is False
+
+
 # ---------------------------------------------------------------------------
 # Contact-resolution cache
 # ---------------------------------------------------------------------------

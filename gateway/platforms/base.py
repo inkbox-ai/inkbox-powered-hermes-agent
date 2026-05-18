@@ -2549,6 +2549,24 @@ class BasePlatformAdapter(ABC):
                 "[%s] Send failed: %s — not attempting plain-text fallback",
                 self.name, error_str,
             )
+            raw_response = result.raw_response if isinstance(result.raw_response, dict) else {}
+            if raw_response.get("error_code") == "sms_too_long":
+                notice = (
+                    "That response is too long for SMS, so I did not send it. "
+                    "Ask a narrower question, or use email for a fuller reply."
+                )
+                try:
+                    await self.send(
+                        chat_id=chat_id,
+                        content=notice,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                except Exception as notify_err:
+                    logger.debug(
+                        "[%s] Could not send SMS-length failure notice: %s",
+                        self.name, notify_err,
+                    )
             return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback

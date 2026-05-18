@@ -64,6 +64,12 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_INKBOX_SMS_HELP_TEXT_DEFAULT = (
+    "I can help route local vendor requests over SMS.\n"
+    "Text what you need, your location, and any timing/urgency. "
+    "Short follow-ups are fine; I wait a moment before replying.\n"
+    "Commands: /help, /reset, /status, /stop. Text STOP to opt out."
+)
 
 
 def _telegramize_command_mentions(text: str, platform: Any) -> str:
@@ -6157,7 +6163,7 @@ class GatewayRunner:
                 self._release_running_agent_state(_quick_key)
 
         if _quick_key in self._running_agents:
-            if event.get_command() == "status":
+            if event.get_command() == "status" and not self._is_inkbox_sms_event(event):
                 return await self._handle_status_command(event)
 
             # Resolve the command once for all early-intercept checks below.
@@ -6167,6 +6173,16 @@ class GatewayRunner:
             )
             _evt_cmd = event.get_command()
             _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
+
+            if _evt_cmd and self._is_inkbox_sms_event(event):
+                _sms_result = await self._handle_inkbox_sms_user_command(
+                    event,
+                    canonical_command=_cmd_def_inner.name if _cmd_def_inner else _evt_cmd,
+                    typed_command=_evt_cmd,
+                    active_session_key=_quick_key,
+                )
+                if _sms_result is not None:
+                    return _sms_result
 
             # Slash command access control on the running-agent fast-path.
             # Mirrors the cold-path gate further below so non-admin users
@@ -6521,6 +6537,15 @@ class GatewayRunner:
                         command = target_command.split()[0] if target_command else target_command
                         _cmd_def = _resolve_cmd(command) if command else None
                         canonical = _cmd_def.name if _cmd_def else command
+
+        if command and self._is_inkbox_sms_event(event):
+            _sms_result = await self._handle_inkbox_sms_user_command(
+                event,
+                canonical_command=canonical,
+                typed_command=command,
+            )
+            if _sms_result is not None:
+                return _sms_result
 
         # Per-platform slash command access control. Only kicks in when the
         # operator has set ``allow_admin_from`` for the source's scope (DM
@@ -9116,8 +9141,86 @@ class GatewayRunner:
         return event.platform_update_id <= recorded_uid
 
 
+    @staticmethod
+    def _is_inkbox_sms_event(event: MessageEvent) -> bool:
+        """Return True for command events originating from Inkbox SMS."""
+        source = getattr(event, "source", None)
+        if getattr(source, "platform", None) != Platform.INKBOX:
+            return False
+        raw = getattr(event, "raw_message", None)
+        if isinstance(raw, dict):
+            event_type = str(raw.get("event_type") or "")
+            if event_type.startswith("text."):
+                return True
+            data = raw.get("data")
+            if isinstance(data, dict) and "text_message" in data:
+                return True
+        user_id_alt = str(getattr(source, "user_id_alt", "") or "")
+        return user_id_alt.startswith("+")
+
+    def _inkbox_sms_help_text(self) -> str:
+        """Return deployment-specific end-user help text for Inkbox SMS."""
+        text: Optional[Any] = None
+        platform_cfg = self.config.platforms.get(Platform.INKBOX)
+        extra = getattr(platform_cfg, "extra", {}) if platform_cfg else {}
+        if isinstance(extra, dict):
+            text = extra.get("sms_help_text")
+        if text is None:
+            text = os.getenv("INKBOX_SMS_HELP_TEXT")
+        rendered = str(text).strip() if text is not None else ""
+        return rendered or _INKBOX_SMS_HELP_TEXT_DEFAULT
+
+    async def _handle_inkbox_sms_user_command(
+        self,
+        event: MessageEvent,
+        *,
+        canonical_command: Optional[str],
+        typed_command: str,
+        active_session_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Handle the small end-user command surface for Inkbox SMS.
+
+        The full Hermes slash registry is operator/admin oriented and can
+        expose dev controls. SMS humans get a compact product-level surface.
+        """
+        command = (canonical_command or typed_command or "").strip().lower()
+        typed = (typed_command or command).strip().lower()
+        if command in {"help", "commands"}:
+            return self._inkbox_sms_help_text()
+        if command == "status":
+            if active_session_key:
+                return "I'm working on your last message. Send /stop to cancel or /reset to start over."
+            return "I'm online. Text what you need help finding; follow-up details are fine."
+        if command == "stop":
+            if active_session_key:
+                await self._interrupt_and_clear_session(
+                    active_session_key,
+                    event.source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="inkbox_sms_stop_command",
+                )
+                return "Cancelled the current request. Text what you need next, or /reset to start over."
+            return "No active request to cancel. Text STOP to opt out, or /reset to start over."
+        if command == "new":
+            if active_session_key:
+                await self._interrupt_and_clear_session(
+                    active_session_key,
+                    event.source,
+                    interrupt_reason=_INTERRUPT_REASON_RESET,
+                    invalidation_reason="inkbox_sms_reset_command",
+                )
+            await self._handle_reset_command(event)
+            return "Started over. Text what you need help finding."
+        logger.info(
+            "Blocked Inkbox SMS end-user command /%s from general Hermes command surface",
+            typed,
+        )
+        return "I don't know that command. Try /help."
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
+        if self._is_inkbox_sms_event(event):
+            return self._inkbox_sms_help_text()
         from hermes_cli.commands import gateway_help_lines
         lines = [
             t("gateway.help.header"),
@@ -9143,6 +9246,8 @@ class GatewayRunner:
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         """Handle /commands [page] - paginated list of all commands and skills."""
+        if self._is_inkbox_sms_event(event):
+            return self._inkbox_sms_help_text()
         from hermes_cli.commands import gateway_help_lines
 
         raw_args = event.get_command_args().strip()
