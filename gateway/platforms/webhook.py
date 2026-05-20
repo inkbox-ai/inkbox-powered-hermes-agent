@@ -58,7 +58,11 @@ _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
     "matrix", "mattermost", "homeassistant", "email", "dingtalk",
     "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+<<<<<<< HEAD
     "qqbot", "yuanbao", "inkbox",
+=======
+    "qqbot", "yuanbao",
+>>>>>>> origin/main
 }
 
 DEFAULT_HOST = "0.0.0.0"

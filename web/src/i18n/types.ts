@@ -666,7 +666,11 @@ export interface Translations {
     columnLabels: {
       triage: string;
       todo: string;
+<<<<<<< HEAD
       scheduled?: string;
+=======
+      scheduled: string;
+>>>>>>> origin/main
       ready: string;
       running: string;
       blocked: string;
@@ -676,7 +680,11 @@ export interface Translations {
     columnHelp: {
       triage: string;
       todo: string;
+<<<<<<< HEAD
       scheduled?: string;
+=======
+      scheduled: string;
+>>>>>>> origin/main
       ready: string;
       running: string;
       blocked: string;

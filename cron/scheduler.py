@@ -37,6 +37,7 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -878,6 +879,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     run_env = os.environ.copy()
     run_env["HERMES_HOME"] = str(_get_hermes_home())
+<<<<<<< HEAD
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+        if profile_home:
+            run_env["HOME"] = profile_home
+    except Exception:
+        pass
+
+=======
+>>>>>>> origin/main
     try:
         from hermes_constants import get_subprocess_home
 
@@ -888,6 +901,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         pass
 
     try:
+        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
             capture_output=True,
@@ -895,6 +909,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             timeout=script_timeout,
             cwd=str(path.parent),
             env=run_env,
+<<<<<<< HEAD
+=======
+            **popen_kwargs,
+>>>>>>> origin/main
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
