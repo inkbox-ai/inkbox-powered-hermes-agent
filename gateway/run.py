@@ -15881,8 +15881,8 @@ class GatewayRunner:
                 return
 
             # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
+            # editing (e.g. iMessage/BlueBubbles, standalone SMTP email) —
+            # each progress update would become a separate message bubble.
             if type(adapter).edit_message is BasePlatformAdapter.edit_message:
                 while not progress_queue.empty():
                     try:
@@ -15890,6 +15890,29 @@ class GatewayRunner:
                     except Exception:
                         break
                 return
+
+            # Per-chat opt-out: some adapters override edit_message for one
+            # chat type but still can't reasonably show tool progress on
+            # others (Inkbox overrides edit_message for voice-call TTS
+            # streaming, but email replies as separate "🖥️ browser..." messages
+            # is a UX disaster).  Adapters that need this knob expose
+            # ``supports_progress_updates(chat_id) -> bool``; absence of the
+            # method preserves the existing behavior for every other adapter.
+            _supports_progress = getattr(adapter, "supports_progress_updates", None)
+            if callable(_supports_progress):
+                try:
+                    _allowed = bool(_supports_progress(source.chat_id))
+                except Exception:
+                    # Hook blew up — fall through to default behavior rather
+                    # than silently muting tool progress on an editable chat.
+                    _allowed = True
+                if not _allowed:
+                    while not progress_queue.empty():
+                        try:
+                            progress_queue.get_nowait()
+                        except Exception:
+                            break
+                    return
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
@@ -16111,20 +16134,36 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                                 _last_edit_ts = time.monotonic()
+                                # Still emit the latest line as a fresh bubble —
+                                # the user is on an editable platform that just
+                                # got rate-limited, so they expect ongoing
+                                # updates.
+                                _flood_result = await adapter.send(
+                                    chat_id=source.chat_id,
+                                    content=msg,
+                                    reply_to=_progress_reply_to,
+                                    metadata=_progress_metadata,
+                                )
+                                if (
+                                    _cleanup_progress
+                                    and getattr(_flood_result, "success", False)
+                                    and getattr(_flood_result, "message_id", None)
+                                ):
+                                    _cleanup_msg_ids.append(str(_flood_result.message_id))
                             else:
+                                # Adapter rejected the edit for non-flood
+                                # reasons — most often the chat doesn't
+                                # support editing at all (e.g. Inkbox SMS:
+                                # InkboxAdapter overrides edit_message for
+                                # voice-call TTS streaming, but returns
+                                # "Not supported" for mail/SMS chats, so the
+                                # top-level `type(adapter).edit_message is
+                                # BasePlatformAdapter.edit_message` guard
+                                # above doesn't fire). Keep the bubble we
+                                # already landed and drop further updates —
+                                # one "agent is working" bubble per turn is
+                                # the contract on non-editable chats.
                                 can_edit = False
-                            _flood_result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                            if (
-                                _cleanup_progress
-                                and getattr(_flood_result, "success", False)
-                                and getattr(_flood_result, "message_id", None)
-                            ):
-                                _cleanup_msg_ids.append(str(_flood_result.message_id))
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
@@ -16135,18 +16174,16 @@ class GatewayRunner:
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
-                        else:
-                            # Editing unsupported: send just this line
-                            result = await adapter.send(
-                                chat_id=source.chat_id,
-                                content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
-                            )
-                        if result.success and result.message_id:
-                            progress_msg_id = result.message_id
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(str(result.message_id))
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+                                if _cleanup_progress:
+                                    _cleanup_msg_ids.append(str(result.message_id))
+                        # else: editing is disabled AND a bubble already
+                        # landed for this turn (progress_msg_id is None only
+                        # when the very first send also failed, which the
+                        # adapter would have logged). Drop this update
+                        # silently — same reasoning as the iMessage /
+                        # BlueBubbles branch at the top of send_progress.
 
                     _last_edit_ts = time.monotonic()
 

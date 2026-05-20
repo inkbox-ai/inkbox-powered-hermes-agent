@@ -1237,6 +1237,38 @@ class InkboxAdapter(BasePlatformAdapter):
 
         return SendResult(success=False, error=f"Unknown Inkbox send mode: {mode!r}")
 
+    def supports_progress_updates(self, chat_id: str) -> bool:
+        """Return True when tool-progress bubbles are useful on this chat.
+
+        Args:
+            chat_id: The chat the gateway is about to dispatch progress to —
+                an active-call contact UUID, an inbound SMS E.164 number, or
+                an email-tied contact UUID / address.
+
+        Returns:
+            True when the gateway should attempt to render tool-progress
+            bubbles for this chat, False to skip them entirely.
+
+        Voice calls stream incremental TTS through ``edit_message`` so
+        ongoing progress is essentially free.  SMS gets a single batched
+        bubble per turn (the gateway's edit-failure handler drops the
+        rest).  Email chats opt out entirely — sending a separate email
+        per tool call ("🖥️ browser_console...") is a UX disaster, and the
+        agent's final reply still lands as one email at turn end.
+        """
+        # Active voice call → edit_message streams deltas; allow progress.
+        if chat_id in self._active_call_ws:
+            return True
+        modality = self._last_inbound_modality.get(str(chat_id), "")
+        if modality == "email":
+            return False
+        if modality == "sms":
+            return True
+        # Unknown modality (agent-initiated outbound, contact-keyed chat
+        # we haven't seen inbound yet) — mirror send()'s default heuristic:
+        # E.164 → SMS, otherwise email.  Treat email as opt-out.
+        return str(chat_id).startswith("+")
+
     async def edit_message(
         self,
         chat_id: str,
