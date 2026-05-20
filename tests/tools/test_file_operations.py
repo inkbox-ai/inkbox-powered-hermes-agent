@@ -585,6 +585,7 @@ class TestPatchReplacePostWriteVerification:
 # Git baseline check for write_file warning
 # =========================================================================
 
+<<<<<<< HEAD
 class TestGitBaselineCheck:
     """Regression tests for _check_git_baseline and warning in write_file result (#27856)."""
 
@@ -705,3 +706,14 @@ class TestGitBaselineCheck:
         result = ops.write_file("/repo/test.txt", "new content\n")
         d = result.to_dict()
         assert "warning" not in d or d["warning"] is None
+=======
+class _DeletedTestGitBaselineCheck:
+    """Removed May 2026 — these tests asserted on a ``_check_git_baseline``
+    method that doesn't exist on ``ShellFileOperations`` (regression intro
+    by a separate refactor). All 6 tests in the class fail with
+    AttributeError on origin/main. Deleted wholesale per Teknium's
+    instruction to keep CI green; reinstate them when the underlying
+    helper is restored or replaced.
+    """
+    pass
+>>>>>>> origin/main

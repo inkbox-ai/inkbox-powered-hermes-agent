@@ -205,6 +205,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
+<<<<<<< HEAD
     # Inkbox identity awareness — fires on every platform (CLI, Telegram,
     # etc.), not just inbound Inkbox messages, so the agent knows which
     # email/phone it can be reached on regardless of where the user is
@@ -214,6 +215,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _inkbox_identity_hint:
         stable_parts.append(_inkbox_identity_hint)
 
+=======
+>>>>>>> origin/main
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
         stable_parts.append(PLATFORM_HINTS[platform_key])
